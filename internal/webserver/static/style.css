@@ -1783,3 +1783,128 @@ body.sidebar-collapsed #chat-area {
 .bubble .image-preview-card img:hover {
   transform: scale(1.02) !important;
 }
+
+/* ── Watch Together & Media Viewer ── */
+.tab-selectors {
+  display: flex;
+  gap: 8px;
+  padding: 0 16px 12px 16px;
+  border-bottom: 1px solid var(--border);
+  margin-top: 6px;
+  flex-shrink: 0;
+}
+
+.tab-btn {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  font-family: inherit;
+  transition: var(--transition);
+  text-align: center;
+}
+
+.tab-btn:hover {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-primary);
+}
+
+.tab-btn.active {
+  background: var(--panel-light);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+
+#media-list-panel {
+  display: none;
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  flex-direction: column;
+}
+
+.media-item-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: 8px;
+  transition: var(--transition);
+}
+
+.media-item-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--border-light);
+}
+
+.media-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  background: var(--panel-light);
+  flex-shrink: 0;
+}
+
+.media-details {
+  flex: 1;
+  min-width: 0;
+}
+
+.media-name {
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.media-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.media-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.media-action-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  transition: var(--transition);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.media-action-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
+.media-action-btn.danger-action:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--error);
+}
+
+.media-action-btn.active-action {
+  color: var(--accent-light);
+}

@@ -60,7 +60,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion || *showVersionV || (len(os.Args) > 1 && os.Args[1] == "version") {
-		fmt.Println("v1.0.0")
+		fmt.Println("v1.0.1")
 		return
 	}
 
@@ -1073,28 +1073,35 @@ func (a *App) sendFile(peerID, filePath, fileName, mimeType string, onProgress f
 	fileSize := fileInfo.Size()
 	id := fmt.Sprintf("ft%d", time.Now().UnixNano())
 
-	contact, err := a.db.GetContact(peerID)
-	if err == nil && contact.Libp2pID != "" && a.p2pEngine.IsConnected(contact.Libp2pID) {
-		go func() {
-			err := a.sendFileLibp2p(contact.Libp2pID, id, filePath, fileName, mimeType, fileSize, onProgress)
-			if err != nil {
-				a.logMsg("filetransfer-error", "P2P file transfer failed: "+err.Error())
+	go func() {
+		contact, err := a.db.GetContact(peerID)
+		if err == nil && contact.Libp2pID != "" {
+			// Proactively attempt to establish direct P2P connection before falling back to Tor
+			if !a.p2pEngine.IsConnected(contact.Libp2pID) && len(contact.Libp2pAddrs) > 0 {
+				a.logMsg("filetransfer", "Attempting P2P connection to "+contact.Libp2pID[:8]+"...")
+				_, _ = a.p2pEngine.Connect(contact.Libp2pID, contact.Libp2pAddrs)
 			}
-		}()
-		return nil
-	}
 
-	if a.torMgr != nil {
-		go func() {
+			if a.p2pEngine.IsConnected(contact.Libp2pID) {
+				err := a.sendFileLibp2p(contact.Libp2pID, id, filePath, fileName, mimeType, fileSize, onProgress)
+				if err == nil {
+					return
+				}
+				a.logMsg("filetransfer", "P2P transfer failed, falling back to Tor: "+err.Error())
+			}
+		}
+
+		if a.torMgr != nil {
 			err := a.sendFileTor(peerID, id, filePath, fileName, mimeType, fileSize, onProgress)
 			if err != nil {
 				a.logMsg("filetransfer-error", "Tor file transfer failed: "+err.Error())
 			}
-		}()
-		return nil
-	}
+		} else {
+			a.logMsg("filetransfer-error", "No transport available for file transfer")
+		}
+	}()
 
-	return fmt.Errorf("no transport available")
+	return nil
 }
 
 func (a *App) sendFileLibp2p(peerPIDStr, id, filePath, fileName, mimeType string, fileSize int64, onProgress func(sent int64)) error {

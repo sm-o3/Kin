@@ -109,7 +109,7 @@ $downloadSuccess = $false
 $isAmd64 = ($env:PROCESSOR_ARCHITECTURE -eq "AMD64") -or ($env:PROCESSOR_ARCHITEW6432 -eq "AMD64")
 
 if ($isAmd64) {
-    $tag = "v1.0.0"
+    $tag = "v1.0.1"
     try {
         $apiResponse = Invoke-RestMethod -Uri "https://api.github.com/repos/sm-o3/Kin/releases/latest" -UseBasicParsing -ErrorAction Stop
         if ($apiResponse -and $apiResponse.tag_name) {

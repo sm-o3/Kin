@@ -59,6 +59,7 @@ document.addEventListener('DOMContentLoaded', () => {
       menu.classList.remove('show');
     }
   });
+  setupWatchEvents();
 });
 
 /* ── WebSocket ─────────────────────────────────────────────────────────── */
@@ -139,6 +140,9 @@ function dispatch(ev) {
       break;
     case 'call_signaling':
       handleCallSignaling(ev.payload);
+      break;
+    case 'watch_signaling':
+      handleWatchSignaling(ev.payload);
       break;
   }
 }
@@ -1870,4 +1874,319 @@ async function renderLinkPreview(url, container) {
   } catch (err) {
     // Silently ignore preview failures to keep chat working smoothly
   }
+}
+
+/* ── Media Gallery, Watch Together & Screen Sharing ── */
+let isWatchActive = false;
+let watchPeer = null;
+let isSyncingWatch = false;
+let isScreenSharing = false;
+let originalVideoTrack = null;
+
+function switchSidebarTab(tab) {
+  const chatsBtn = document.getElementById('tab-btn-chats');
+  const mediaBtn = document.getElementById('tab-btn-media');
+  const chatsView = document.getElementById('chats-sidebar-view');
+  const mediaView = document.getElementById('media-list-panel');
+  
+  if (tab === 'chats') {
+    chatsBtn.classList.add('active');
+    mediaBtn.classList.remove('active');
+    chatsView.style.display = 'flex';
+    mediaView.style.display = 'none';
+  } else {
+    chatsBtn.classList.remove('active');
+    mediaBtn.classList.add('active');
+    chatsView.style.display = 'none';
+    mediaView.style.display = 'flex';
+    loadMediaList();
+  }
+}
+
+async function loadMediaList() {
+  const grid = document.getElementById('media-items-grid');
+  grid.innerHTML = '<div style="text-align:center;color:var(--text-muted);font-size:12px;padding:20px;">Loading files...</div>';
+  
+  try {
+    const files = await get('/api/media/list');
+    grid.innerHTML = '';
+    
+    if (!files || files.length === 0) {
+      grid.innerHTML = '<div style="text-align:center;color:var(--text-muted);font-size:12px;padding:20px;">No files found</div>';
+      return;
+    }
+    
+    files.sort((a, b) => new Date(b.mod_time) - new Date(a.mod_time));
+    
+    files.forEach(f => {
+      let icon = '📁';
+      if (f.type === 'image') icon = '🖼️';
+      else if (f.type === 'video') icon = '🎥';
+      else if (f.type === 'audio') icon = '🎵';
+      else if (f.type === 'document') icon = '📄';
+      
+      const sizeStr = formatBytes(f.size);
+      const isWatchable = f.type === 'image' || f.type === 'video';
+      const watchBtnHtml = (isWatchable && activePeer) 
+        ? `<button class="media-action-btn" onclick="startWatchTogether('${esc(f.url)}')" title="Watch Together with friend">👥</button>` 
+        : '';
+        
+      const item = document.createElement('div');
+      item.className = 'media-item-row';
+      item.innerHTML = `
+        <div class="media-icon">${icon}</div>
+        <div class="media-details">
+          <div class="media-name" title="${esc(f.name)}">${esc(f.name)}</div>
+          <div class="media-meta">${esc(sizeStr)} • ${esc(f.path.split('/')[0].toUpperCase())}</div>
+        </div>
+        <div class="media-actions">
+          <a class="media-action-btn" href="${esc(f.url)}" target="_blank" title="Play / Open" style="text-decoration:none;">▶️</a>
+          ${watchBtnHtml}
+          <button class="media-action-btn danger-action" onclick="deleteMedia('${esc(f.path)}')" title="Delete File">🗑️</button>
+        </div>
+      `;
+      grid.appendChild(item);
+    });
+  } catch (err) {
+    console.error("Load media list error:", err);
+    grid.innerHTML = '<div style="text-align:center;color:var(--error);font-size:12px;padding:20px;">Failed to load files</div>';
+  }
+}
+
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+async function deleteMedia(path) {
+  if (!confirm("Are you sure you want to delete this file?")) return;
+  
+  try {
+    const res = await post('/api/media/delete', { path: path });
+    if (res && res.ok) {
+      logBar("File deleted successfully", "ok");
+      loadMediaList();
+    } else {
+      logBar("Failed to delete file", "err");
+    }
+  } catch (err) {
+    console.error("Delete media error:", err);
+    logBar("Failed to delete file: " + err.message, "err");
+  }
+}
+
+function startWatchTogether(url) {
+  if (!activePeer) {
+    logBar("Select a contact to watch together", "err");
+    return;
+  }
+  
+  sendWatchSignaling("init", 0, url);
+  showWatchPlayer(url);
+  logBar("Watch Together session started! Playing...", "ok");
+}
+
+function sendWatchSignaling(event, time, fileUrl) {
+  if (!activePeer) return;
+  const payload = {
+    event: event,
+    time: time || 0,
+    url: fileUrl || ""
+  };
+  post('/api/send', {
+    peer_id: activePeer,
+    body: `[watch-sig:${JSON.stringify(payload)}]`
+  }).catch(err => console.error("Failed to send watch sig:", err));
+}
+
+function handleWatchSignaling(payload) {
+  const data = JSON.parse(payload.data);
+  const fromPeer = payload.peer;
+  
+  if (data.event === "init") {
+    isWatchActive = true;
+    watchPeer = fromPeer;
+    
+    if (activePeer !== fromPeer) {
+      selectContact(fromPeer);
+    }
+    
+    showWatchPlayer(data.url);
+    logBar("Watch Together session started by friend", "ok");
+  } else if (data.event === "play") {
+    const video = document.getElementById('watch-video');
+    if (video && video.paused) {
+      isSyncingWatch = true;
+      video.currentTime = data.time;
+      video.play().then(() => {
+        isSyncingWatch = false;
+      }).catch(e => {
+        isSyncingWatch = false;
+      });
+    }
+  } else if (data.event === "pause") {
+    const video = document.getElementById('watch-video');
+    if (video && !video.paused) {
+      isSyncingWatch = true;
+      video.currentTime = data.time;
+      video.pause();
+      isSyncingWatch = false;
+    }
+  } else if (data.event === "seek") {
+    const video = document.getElementById('watch-video');
+    if (video) {
+      if (Math.abs(video.currentTime - data.time) > 0.5) {
+        isSyncingWatch = true;
+        video.currentTime = data.time;
+        isSyncingWatch = false;
+      }
+    }
+  } else if (data.event === "close") {
+    logBar("Friend ended the Watch Together session", "ok");
+    hideWatchPlayer(true);
+  }
+}
+
+function showWatchPlayer(url) {
+  const container = document.getElementById('watch-together-container');
+  const video = document.getElementById('watch-video');
+  const img = document.getElementById('watch-image');
+  
+  container.style.display = 'flex';
+  
+  const isVideo = /\.(mp4|webm|ogg|mov|mkv|avi)$/i.test(url);
+  if (isVideo) {
+    img.style.display = 'none';
+    video.style.display = 'block';
+    video.src = url;
+    video.load();
+  } else {
+    video.style.display = 'none';
+    img.style.display = 'block';
+    img.src = url;
+  }
+  
+  isWatchActive = true;
+}
+
+function hideWatchPlayer(silent) {
+  const container = document.getElementById('watch-together-container');
+  const video = document.getElementById('watch-video');
+  const img = document.getElementById('watch-image');
+  
+  if (!silent && activePeer) {
+    sendWatchSignaling("close", 0, "");
+  }
+  
+  video.pause();
+  video.src = "";
+  video.style.display = 'none';
+  img.src = "";
+  img.style.display = 'none';
+  container.style.display = 'none';
+  
+  isWatchActive = false;
+  watchPeer = null;
+}
+
+function closeWatchSession() {
+  hideWatchPlayer(false);
+}
+
+function setupWatchEvents() {
+  const video = document.getElementById('watch-video');
+  
+  video.addEventListener('play', () => {
+    if (isSyncingWatch) return;
+    sendWatchSignaling("play", video.currentTime);
+  });
+  
+  video.addEventListener('pause', () => {
+    if (isSyncingWatch) return;
+    sendWatchSignaling("pause", video.currentTime);
+  });
+  
+  video.addEventListener('seeked', () => {
+    if (isSyncingWatch) return;
+    sendWatchSignaling("seek", video.currentTime);
+  });
+}
+
+async function toggleScreenShare() {
+  if (!peerConnection || peerConnection.connectionState !== 'connected') {
+    logBar("No active call connected", "err");
+    return;
+  }
+  
+  const btn = document.getElementById('btn-share-screen');
+  
+  if (!isScreenSharing) {
+    try {
+      logBar("Acquiring screen share stream...", "ok");
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      const screenTrack = screenStream.getVideoTracks()[0];
+      
+      const senders = peerConnection.getSenders();
+      const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+      
+      if (videoSender) {
+        originalVideoTrack = videoSender.track;
+        await videoSender.replaceTrack(screenTrack);
+      }
+      
+      const localVideo = document.getElementById('local-video');
+      if (localVideo) {
+        localVideo.srcObject = screenStream;
+      }
+      
+      screenTrack.onended = () => {
+        stopScreenShare();
+      };
+      
+      isScreenSharing = true;
+      btn.style.background = 'var(--success)';
+      logBar("Screen sharing active", "ok");
+    } catch (err) {
+      console.error("Screen share start error:", err);
+      logBar("Failed to start screen share: " + err.message, "err");
+    }
+  } else {
+    stopScreenShare();
+  }
+}
+
+async function stopScreenShare() {
+  if (!isScreenSharing) return;
+  
+  const btn = document.getElementById('btn-share-screen');
+  
+  const localVideo = document.getElementById('local-video');
+  if (localVideo && localVideo.srcObject) {
+    const tracks = localVideo.srcObject.getTracks();
+    tracks.forEach(track => track.stop());
+  }
+  
+  if (peerConnection && originalVideoTrack) {
+    const senders = peerConnection.getSenders();
+    const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+    if (videoSender) {
+      try {
+        await videoSender.replaceTrack(originalVideoTrack);
+      } catch (err) {
+        console.error("Failed to restore camera track:", err);
+      }
+    }
+  }
+  
+  if (localVideo && localStream) {
+    localVideo.srcObject = localStream;
+  }
+  
+  originalVideoTrack = null;
+  isScreenSharing = false;
+  btn.style.background = '';
+  logBar("Screen sharing stopped", "ok");
 }

@@ -185,6 +185,7 @@ func (e *Engine) Start() error {
 		libp2p.ListenAddrStrings(listenAddrStrings...),
 		libp2p.EnableRelay(),
 		libp2p.EnableHolePunching(),
+		libp2p.NATPortMap(),
 	)
 	if err != nil {
 		return fmt.Errorf("create libp2p host: %w", err)

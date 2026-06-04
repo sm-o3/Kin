@@ -32,16 +32,30 @@
       </button>
     </div>
 
-    <div id="search-wrap">
-      <div class="search-input-container">
-        <svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-        </svg>
-        <input id="contact-search" type="search" placeholder="Search contacts…" autocomplete="off">
-      </div>
+    <div class="tab-selectors">
+      <button id="tab-btn-chats" class="tab-btn active" onclick="switchSidebarTab('chats')">Chats</button>
+      <button id="tab-btn-media" class="tab-btn" onclick="switchSidebarTab('media')">Media Gallery</button>
     </div>
 
-    <div id="contact-list"></div>
+    <div id="chats-sidebar-view" style="display: flex; flex-direction: column; flex: 1; overflow: hidden;">
+      <div id="search-wrap">
+        <div class="search-input-container">
+          <svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+          </svg>
+          <input id="contact-search" type="search" placeholder="Search contacts…" autocomplete="off">
+        </div>
+      </div>
+      <div id="contact-list"></div>
+    </div>
+
+    <div id="media-list-panel">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-shrink: 0;">
+        <span style="font-weight: 600; font-size: 14px; color: var(--text-primary);">Media Gallery</span>
+        <button class="btn-ghost" onclick="loadMediaList()" style="padding: 4px 8px; font-size: 11px;">Refresh</button>
+      </div>
+      <div id="media-items-grid"></div>
+    </div>
 
     <div class="sb-foot">
       <div class="sb-identity-section">
@@ -128,6 +142,18 @@
               </button>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- Watch Together Player -->
+      <div id="watch-together-container" style="display: none; flex-direction: column; background: var(--panel-light); border-bottom: 1px solid var(--border); padding: 12px; gap: 8px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-weight: 600; font-size: 13px; color: var(--accent-light);" id="watch-title">Watch Together Session</span>
+          <button class="btn-ghost" onclick="closeWatchSession()" style="padding: 4px 8px; font-size: 11px; background: rgba(239, 68, 68, 0.15); color: var(--error); border: none;">End Session</button>
+        </div>
+        <div id="watch-player-wrapper" style="width: 100%; position: relative; background: #000; border-radius: var(--radius-sm); overflow: hidden; display: flex; justify-content: center; align-items: center; border: 1px solid var(--border);">
+          <video id="watch-video" style="max-height: 280px; width: 100%; display: none;" controls></video>
+          <img id="watch-image" style="max-height: 280px; max-width: 100%; object-fit: contain; display: none;" />
         </div>
       </div>
 
@@ -320,6 +346,11 @@
     <button class="control-btn" id="btn-toggle-cam" onclick="toggleCam()" title="Enable/Disable Video">
       <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+      </svg>
+    </button>
+    <button class="control-btn" id="btn-share-screen" onclick="toggleScreenShare()" title="Share Screen">
+      <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
       </svg>
     </button>
     <button class="control-btn hangup" onclick="hangupCall()" title="End Call">

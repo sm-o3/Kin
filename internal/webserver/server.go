@@ -142,6 +142,13 @@ func (s *Server) HandleInboundMessage(from, body string) (bool, *ProgressEvent) 
 			"data": payload,
 		}})
 		return true, nil
+	case strings.HasPrefix(body, "[watch-sig:"):
+		payload := strings.TrimSuffix(strings.TrimPrefix(body, "[watch-sig:"), "]")
+		s.Broadcast(PushEvent{Type: "watch_signaling", Payload: map[string]interface{}{
+			"peer": from,
+			"data": payload,
+		}})
+		return true, nil
 	}
 	return false, nil
 }
@@ -166,6 +173,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/dht/resolve", s.cors(s.handleDHTResolve))
 	mux.HandleFunc("/api/link-preview", s.cors(s.handleLinkPreview))
 	mux.HandleFunc("/api/media/", s.handleMediaServe)
+	mux.HandleFunc("/api/media/list", s.cors(s.handleMediaList))
+	mux.HandleFunc("/api/media/delete", s.cors(s.handleMediaDelete))
 
 	sub, _ := fs.Sub(staticFiles, "static")
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
@@ -378,7 +387,7 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, "peer_id required", http.StatusBadRequest); return
 	}
 
-	if strings.HasPrefix(req.Body, "[call-sig:") || strings.HasPrefix(req.Body, "[call-stream:") {
+	if strings.HasPrefix(req.Body, "[call-sig:") || strings.HasPrefix(req.Body, "[call-stream:") || strings.HasPrefix(req.Body, "[watch-sig:") {
 		if s.cb.SendEphemeralMessage != nil {
 			if err := s.cb.SendEphemeralMessage(req.PeerID, req.Body); err != nil {
 				jsonErr(w, err.Error(), http.StatusInternalServerError); return
@@ -511,6 +520,84 @@ func (s *Server) handleMediaServe(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", ct)
 	http.ServeFile(w, r, full)
+}
+
+type MediaFile struct {
+	Name    string    `json:"name"`
+	Path    string    `json:"path"`
+	Size    int64     `json:"size"`
+	ModTime time.Time `json:"mod_time"`
+	Type    string    `json:"type"`
+	URL     string    `json:"url"`
+}
+
+func (s *Server) handleMediaList(w http.ResponseWriter, r *http.Request) {
+	files := []MediaFile{}
+
+	for _, sub := range []string{"recv", "sent"} {
+		dirPath := filepath.Join(s.mediaDir, sub)
+		entries, err := os.ReadDir(dirPath)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			name := entry.Name()
+			ext := strings.ToLower(filepath.Ext(name))
+			
+			t := "other"
+			switch ext {
+			case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg":
+				t = "image"
+			case ".mp4", ".webm", ".ogg", ".mov", ".mkv", ".avi":
+				t = "video"
+			case ".mp3", ".wav", ".flac", ".m4a", ".aac":
+				t = "audio"
+			case ".pdf", ".txt", ".doc", ".docx", ".xls", ".xlsx":
+				t = "document"
+			}
+
+			files = append(files, MediaFile{
+				Name:    name,
+				Path:    sub + "/" + name,
+				Size:    info.Size(),
+				ModTime: info.ModTime(),
+				Type:    t,
+				URL:     "/api/media/" + sub + "/" + name,
+			})
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(files)
+}
+
+func (s *Server) handleMediaDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost { http.NotFound(w, r); return }
+	var req struct {
+		Path string `json:"path"`
+	}
+	if json.NewDecoder(r.Body).Decode(&req) != nil || req.Path == "" {
+		jsonErr(w, "path required", http.StatusBadRequest); return
+	}
+	
+	rel := filepath.Clean(req.Path)
+	if strings.Contains(rel, "..") || (!strings.HasPrefix(rel, "recv/") && !strings.HasPrefix(rel, "sent/")) {
+		jsonErr(w, "bad path", http.StatusBadRequest); return
+	}
+
+	full := filepath.Join(s.mediaDir, rel)
+	if err := os.Remove(full); err != nil {
+		jsonErr(w, "delete failed: "+err.Error(), http.StatusInternalServerError); return
+	}
+
+	jsonOK(w, map[string]bool{"ok": true})
 }
 
 func (s *Server) handleMessageStar(w http.ResponseWriter, r *http.Request) {

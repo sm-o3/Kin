@@ -5,6 +5,10 @@
 - **Tor identity** — your permanent `.onion` address, no registration, no phone number.
 - **LAN discovery** — automatic peer discovery over local Wi-Fi with zero configuration.
 - **DHT resolution** — find peers by their libp2p Peer ID via IPFS public gateways.
+- **Dynamic P2P Dialing & NAT Traversal** — dynamic UPnP port mapping and direct multiaddress connection routing maximize file transfer speed, falling back to Tor routing when direct connections are unavailable.
+- **Screen Sharing** — stream your screen/windows during interactive WebRTC audio/video calls with friends.
+- **Watch Together** — synchronized, real-time media player allowing you and your contacts to watch videos and view images in sync.
+- **Media Gallery & Viewer** — manage local media files, view sent/received items, and launch sync playback directly from a unified Media tab.
 - **Web UI** — beautiful and responsive browser interface served locally on port `8080`.
 - **Bundled Tor** — no manual Tor installation needed; Tor is embedded directly in the app.
 
