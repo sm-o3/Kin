@@ -55,7 +55,14 @@ func main() {
 	testReceiver := flag.Bool("test-receiver", false, "Run in automated test mode as receiver")
 	testSender   := flag.String("test-sender", "", "Run in automated test mode as sender to the specified onion address")
 	webPort      := flag.Int("web-port", webUIPort, "Port for the web UI")
+	showVersion  := flag.Bool("version", false, "Print version and exit")
+	showVersionV := flag.Bool("v", false, "Print version and exit")
 	flag.Parse()
+
+	if *showVersion || *showVersionV || (len(os.Args) > 1 && os.Args[1] == "version") {
+		fmt.Println("v1.0.0")
+		return
+	}
 
 	home, _ := os.UserHomeDir()
 	dataDir := filepath.Join(home, ".kin")
@@ -1109,8 +1116,11 @@ func (a *App) sendFileLibp2p(peerPIDStr, id, filePath, fileName, mimeType string
 		Size: fileSize,
 	}
 
-	enc := json.NewEncoder(stream)
-	if err := enc.Encode(hdr); err != nil {
+	hdrBytes, err := json.Marshal(hdr)
+	if err != nil {
+		return err
+	}
+	if _, err := stream.Write(hdrBytes); err != nil {
 		return err
 	}
 
@@ -1159,7 +1169,12 @@ func (a *App) sendFileTor(peerID, id, filePath, fileName, mimeType string, fileS
 	}
 
 	proxyConn.SetDeadline(time.Now().Add(15 * time.Second))
-	if err := json.NewEncoder(proxyConn).Encode(initMsg); err != nil {
+	initBytes, err := json.Marshal(initMsg)
+	if err != nil {
+		proxyConn.Close()
+		return fmt.Errorf("marshal init: %w", err)
+	}
+	if _, err := proxyConn.Write(initBytes); err != nil {
 		proxyConn.Close()
 		return fmt.Errorf("send init: %w", err)
 	}
