@@ -65,6 +65,31 @@ Write-Host "[*] Installing binary to: $installDir"
 New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 Copy-Item "kin.exe" (Join-Path $installDir "kin.exe") -Force
 
+# 3.1 Install Tor on Windows
+if (!(Get-Command tor -ErrorAction SilentlyContinue) -and !(Test-Path (Join-Path $installDir "tor.exe"))) {
+    Write-Host "[*] tor.exe not found in PATH or local directory. Downloading Tor Expert Bundle..." -ForegroundColor Yellow
+    $torUrl = "https://archive.torproject.org/tor-package-archive/torbrowser/13.5.1/tor-expert-bundle-windows-x86_64-13.5.1.tar.gz"
+    $torArchive = Join-Path $tempDir "tor.tar.gz"
+    
+    # Download
+    Invoke-WebRequest -Uri $torUrl -OutFile $torArchive -Verbose:$false
+    
+    # Extract using native tar tool on Windows
+    Write-Host "[*] Extracting Tor binary..."
+    Start-Process tar -ArgumentList "-xzf `"$torArchive`" -C `"$tempDir`"" -NoNewWindow -Wait
+    
+    # Find tor.exe and copy all files in its directory (including DLLs and geoip data) to installDir
+    $extractedTor = Get-ChildItem -Path $tempDir -Filter "tor.exe" -Recurse | Select-Object -First 1
+    if ($extractedTor) {
+        $torFolder = $extractedTor.Directory.FullName
+        Write-Host "[*] Copying Tor files and libraries..."
+        Copy-Item (Join-Path $torFolder "*") $installDir -Force -Recurse
+        Write-Host "[+] Installed Tor binaries and dependencies into Kin program directory." -ForegroundColor Green
+    } else {
+        Write-Host "[!] Warning: tor.exe not found in extracted archive. You may need to install Tor manually." -ForegroundColor Red
+    }
+}
+
 # Add to User PATH
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($userPath -notlike "*$installDir*") {
