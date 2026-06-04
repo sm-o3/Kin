@@ -11,6 +11,45 @@ $installDir = Join-Path $HOME "AppData\Local\Programs\Kin"
 
 # --- Helper Functions ---
 
+function Download-File {
+    param(
+        [string]$Url,
+        [string]$OutputPath
+    )
+    
+    # Try WebClient first as it is fast and reliable
+    try {
+        $webClient = New-Object System.Net.WebClient
+        # Set a modern user-agent so GitHub doesn't block the request
+        $webClient.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        $webClient.DownloadFile($Url, $OutputPath)
+        if (Test-Path $OutputPath) {
+            $fileSize = (Get-Item $OutputPath).Length
+            if ($fileSize -gt 1MB) {
+                return $true
+            }
+        }
+    } catch {
+        Write-Host "[!] WebClient download method failed. Trying alternative..." -ForegroundColor Yellow
+    }
+    
+    # Try Invoke-WebRequest with progress disabled (to avoid truncation/slowness)
+    try {
+        $oldProgress = $ProgressPreference
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $Url -OutFile $OutputPath -UseBasicParsing -UserAgent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" -Verbose:$false -ErrorAction Stop
+        $ProgressPreference = $oldProgress
+        if (Test-Path $OutputPath) {
+            return $true
+        }
+    } catch {
+        Write-Host "[!] Invoke-WebRequest download method failed: $_" -ForegroundColor Yellow
+        $ProgressPreference = $oldProgress
+    }
+    
+    return $false
+}
+
 function Install-Tor {
     param(
         [string]$InstallDir,
@@ -22,27 +61,29 @@ function Install-Tor {
         $torUrl = "https://archive.torproject.org/tor-package-archive/torbrowser/13.5.1/tor-expert-bundle-windows-x86_64-13.5.1.tar.gz"
         $torArchive = Join-Path $TempDir "tor.tar.gz"
         
-        try {
-            # Download
-            Invoke-WebRequest -Uri $torUrl -OutFile $torArchive -Verbose:$false -ErrorAction Stop
-            
-            # Extract using native tar tool on Windows
-            Write-Host "[*] Extracting Tor binary..."
-            Start-Process tar -ArgumentList "-xzf `"$torArchive`" -C `"$TempDir`"" -NoNewWindow -Wait
-            
-            # Find tor.exe and copy all files in its directory (including DLLs and geoip data) to InstallDir
-            $extractedTor = Get-ChildItem -Path $TempDir -Filter "tor.exe" -Recurse | Select-Object -First 1
-            if ($extractedTor) {
-                $torFolder = $extractedTor.Directory.FullName
-                Write-Host "[*] Copying Tor files and libraries..."
-                Copy-Item (Join-Path $torFolder "*") $InstallDir -Force -Recurse
-                Write-Host "[+] Installed Tor binaries and dependencies into Kin program directory." -ForegroundColor Green
-            } else {
-                Write-Host "[!] Warning: tor.exe not found in extracted archive. You may need to install Tor manually." -ForegroundColor Red
+        $downloaded = Download-File -Url $torUrl -OutputPath $torArchive
+        if ($downloaded) {
+            try {
+                # Extract using native tar tool on Windows
+                Write-Host "[*] Extracting Tor binary..."
+                Start-Process tar -ArgumentList "-xzf `"$torArchive`" -C `"$TempDir`"" -NoNewWindow -Wait
+                
+                # Find tor.exe and copy all files in its directory (including DLLs and geoip data) to InstallDir
+                $extractedTor = Get-ChildItem -Path $TempDir -Filter "tor.exe" -Recurse | Select-Object -First 1
+                if ($extractedTor) {
+                    $torFolder = $extractedTor.Directory.FullName
+                    Write-Host "[*] Copying Tor files and libraries..."
+                    Copy-Item (Join-Path $torFolder "*") $InstallDir -Force -Recurse
+                    Write-Host "[+] Installed Tor binaries and dependencies into Kin program directory." -ForegroundColor Green
+                } else {
+                    Write-Host "[!] Warning: tor.exe not found in extracted archive. You may need to install Tor manually." -ForegroundColor Red
+                }
+            } catch {
+                Write-Host "[!] Warning: Failed to extract Tor: $_" -ForegroundColor Red
+                Write-Host "You may need to install Tor manually and add it to your PATH." -ForegroundColor Red
             }
-        } catch {
-            Write-Host "[!] Warning: Failed to download/extract Tor: $_" -ForegroundColor Red
-            Write-Host "You may need to install Tor manually and add it to your PATH." -ForegroundColor Red
+        } else {
+            Write-Host "[!] Warning: Failed to download Tor. You may need to install Tor manually." -ForegroundColor Red
         }
     }
 }
@@ -76,14 +117,8 @@ if ($isAmd64) {
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
     $zipPath = Join-Path $tempDir $assetName
     
-    Write-Host "[*] Attempting to download pre-compiled binary: $assetName..." -ForegroundColor Green
-    try {
-        Invoke-WebRequest -Uri $url -OutFile $zipPath -Verbose:$false -ErrorAction Stop
-        $downloadSuccess = $true
-    } catch {
-        Write-Host "[!] Pre-compiled binary download not available or failed. Falling back to build from source." -ForegroundColor Yellow
-        Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
-    }
+    Write-Host "[*] Attempting to download precompiled binary: $assetName..." -ForegroundColor Green
+    $downloadSuccess = Download-File -Url $url -OutputPath $zipPath
     
     if ($downloadSuccess) {
         Write-Host "[+] Download successful! Extracting binary..." -ForegroundColor Green
@@ -123,6 +158,9 @@ if ($isAmd64) {
             Write-Host "[!] Extraction or installation of precompiled binary failed: $_" -ForegroundColor Yellow
             Write-Host "Falling back to build from source." -ForegroundColor Yellow
         }
+        Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
+    } else {
+        Write-Host "[!] Pre-compiled binary download failed. Falling back to build from source." -ForegroundColor Yellow
         Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
     }
 } else {
