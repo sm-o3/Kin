@@ -14,12 +14,9 @@ import (
 	"syscall"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"kin/internal/p2p"
 	"kin/internal/store"
 	"kin/internal/tor"
-	"kin/internal/ui"
 	"kin/internal/webserver"
 )
 
@@ -38,7 +35,6 @@ type App struct {
 	torMgr     *tor.Manager
 	sigServer  *tor.SignalingServer
 	p2pEngine  *p2p.Engine
-	program    *tea.Program
 	web        *webserver.Server
 
 	myOnion string
@@ -56,7 +52,6 @@ const webUIPort = 8080
 func main() {
 	testReceiver := flag.Bool("test-receiver", false, "Run in automated test mode as receiver")
 	testSender   := flag.String("test-sender", "", "Run in automated test mode as sender to the specified onion address")
-	enableWeb    := flag.Bool("web", false, "Enable web UI on http://127.0.0.1:8080")
 	webPort      := flag.Int("web-port", webUIPort, "Port for the web UI")
 	flag.Parse()
 
@@ -90,98 +85,75 @@ func main() {
 		torConns:     make(map[string]net.Conn),
 	}
 
-	// Build callbacks
-	cb := ui.Callbacks{
-		SendMessage:      app.sendMessage,
-		ConnectPeer:      app.connectPeer,
-		AddContact:       app.addContact,
-		DeleteContact:    app.deleteContact,
-		GetHistory:       app.getHistory,
-		GetContacts:      app.getContacts,
-		GetMyOnion:       func() string { return app.myOnion },
-		PasteOffer:       app.pasteOffer,
-		GetLocalOffer:    app.getLocalOffer,
-		AcceptConnection: app.acceptConnection,
-		RejectConnection: app.rejectConnection,
-		ClearChat:        app.clearChat,
+	// Start web UI
+	wcb := webserver.Callbacks{
+		GetMyOnion:    func() string { return app.myOnion },
+		GetMyPeerID: func() string {
+			if app.p2pEngine != nil {
+				id, _ := app.p2pEngine.GetMyInfo()
+				return id
+			}
+			return ""
+		},
+		GetContacts:   app.getContacts,
+		GetMessages:          app.getHistory,
+		GetMessagesPaginated: app.getHistoryPaginated,
+		SendMessage:          app.sendMessage,
+		SendEphemeralMessage: app.sendEphemeralMessage,
+		AddContact:           app.addContactWithPeerID,
+		DeleteContact:        app.deleteContact,
+		ClearChat:            app.clearChat,
+		ConnectPeer:          app.connectPeer,
+		ResolveDHT:           app.resolveOnionFromDHT,
+		SaveMessage:          app.db.SaveMessage,
+		DeleteMessage: func(peer, msgID string) error {
+			return app.db.DeleteMessage(peer, msgID)
+		},
+		StarMessage: func(peer, msgID string, starred bool) error {
+			return app.db.StarMessage(peer, msgID, starred)
+		},
+		ClearAllData: func() error {
+			return app.db.ClearAllData()
+		},
+		CompactDB: func() error {
+			return app.db.Compact(filepath.Join(app.dataDir, "kin.db"))
+		},
+		GetTorStatus: func() string {
+			if app.torMgr != nil && app.myOnion != "" {
+				return "online"
+			}
+			return "offline"
+		},
 	}
-
-	// Start optional web UI
-	if *enableWeb {
-		wcb := webserver.Callbacks{
-			GetMyOnion:    func() string { return app.myOnion },
-			GetMyPeerID: func() string {
-				if app.p2pEngine != nil {
-					id, _ := app.p2pEngine.GetMyInfo()
-					return id
-				}
-				return ""
-			},
-			GetContacts:   app.getContacts,
-			GetMessages:          app.getHistory,
-			GetMessagesPaginated: app.getHistoryPaginated,
-			SendMessage:          app.sendMessage,
-			SendEphemeralMessage: app.sendEphemeralMessage,
-			AddContact:           app.addContactWithPeerID,
-			DeleteContact:        app.deleteContact,
-			ClearChat:            app.clearChat,
-			ConnectPeer:          app.connectPeer,
-			ResolveDHT:           app.resolveOnionFromDHT,
-			SaveMessage:          app.db.SaveMessage,
-			DeleteMessage: func(peer, msgID string) error {
-				return app.db.DeleteMessage(peer, msgID)
-			},
-			StarMessage: func(peer, msgID string, starred bool) error {
-				return app.db.StarMessage(peer, msgID, starred)
-			},
-			ClearAllData: func() error {
-				return app.db.ClearAllData()
-			},
-			CompactDB: func() error {
-				return app.db.Compact(filepath.Join(app.dataDir, "kin.db"))
-			},
-			GetTorStatus: func() string {
-				if app.torMgr != nil && app.myOnion != "" {
-					return "online"
-				}
-				return "offline"
-			},
-		}
-		app.web = webserver.New(*webPort, wcb)
-		if err := app.web.Start(); err != nil {
-			log.Printf("[web] failed to start: %v", err)
-		} else {
-			log.Printf("[web] UI available at http://127.0.0.1:%d", *webPort)
-		}
-
-		// Start Tor in background
-		go app.startTor()
-
-		// Wait for SIGINT or SIGTERM and print logs to console
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		log.Println("[web] Running in headless mode. Press Ctrl+C to stop.")
-		<-sigChan
-		log.Println("[web] Shutting down Kin...")
-		return
+	app.web = webserver.New(*webPort, wcb)
+	if err := app.web.Start(); err != nil {
+		log.Printf("[web] failed to start: %v", err)
+	} else {
+		log.Printf("[web] UI available at http://127.0.0.1:%d", *webPort)
 	}
-
-	m := ui.NewModel(cb)
-	p := tea.NewProgram(m, tea.WithAltScreen())
-	app.program = p
 
 	// Start Tor in background
 	go app.startTor()
 
-	if _, err := p.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "kin: %v\n", err)
-		os.Exit(1)
-	}
+	// Wait for SIGINT or SIGTERM and print logs to console
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	log.Println("[web] Running. Press Ctrl+C to stop.")
+	<-sigChan
+	log.Println("[web] Shutting down Kin...")
 }
 
 // ---------------------------------------------------------------------------
 // Tor startup
 // ---------------------------------------------------------------------------
+
+func (a *App) logMsg(label, line string) {
+	formatted := fmt.Sprintf("[%s] %s", label, line)
+	log.Println(formatted)
+	if a.web != nil {
+		go a.web.PushLog(formatted)
+	}
+}
 
 func (a *App) startTor() {
 	torDir := filepath.Join(a.dataDir, "tor")
@@ -189,28 +161,19 @@ func (a *App) startTor() {
 	a.torMgr = mgr
 
 	logFn := func(line string) {
-		a.send(ui.TorStateMsg{Line: line})
-		if a.program == nil {
-			log.Println("[tor]", line)
-		}
+		a.logMsg("tor", line)
 	}
 
 	torFailed := false
 	if err := mgr.Start(logFn); err != nil {
-		a.send(ui.ErrorMsg{Err: fmt.Errorf("tor start: %w", err)})
-		if a.program == nil {
-			log.Printf("[tor] Failed to start: %v. Continuing without Tor.", err)
-		}
+		a.logMsg("error", "tor start: "+err.Error())
 		torFailed = true
 	}
 
 	if !torFailed {
 		// Wait up to 90 s for bootstrap
 		if err := mgr.WaitBootstrap(90 * time.Second); err != nil {
-			a.send(ui.ErrorMsg{Err: err})
-			if a.program == nil {
-				log.Printf("[tor] Bootstrapping failed: %v. Continuing without Tor.", err)
-			}
+			a.logMsg("error", "tor bootstrap failed: "+err.Error())
 			torFailed = true
 		}
 	}
@@ -220,10 +183,7 @@ func (a *App) startTor() {
 		onion = mgr.OnionAddr()
 		a.myOnion = onion
 		a.db.SetIdentity(onion, "")
-		a.send(ui.OnionAddrMsg{Addr: onion})
-		if a.program == nil {
-			log.Printf("[tor] Bootstrapped successfully! Onion address: %s", onion)
-		}
+		a.logMsg("tor", "Bootstrapped successfully! Onion address: "+onion)
 		if a.web != nil {
 			peerID := ""
 			if a.p2pEngine != nil {
@@ -255,46 +215,28 @@ func (a *App) startTor() {
 			Body:      body,
 			Timestamp: time.Now(),
 		})
-		a.send(ui.IncomingMsg{From: fromOnion, Body: body})
-		if a.program == nil {
-			log.Printf("[chat] Message received from %s: %s", fromOnion, body)
-		}
+		log.Printf("[chat] Message received from %s: %s", fromOnion, body)
 		if a.web != nil {
 			go a.web.PushMessage(fromOnion, a.getHistory(fromOnion))
 		}
 	}
 	onState := func(peerOnion, state string) {
-		a.send(ui.IceStateMsg{S: state})
-		if a.program == nil {
-			log.Printf("[p2p] Connection state with %s changed to: %s", peerOnion, state)
-		}
+		a.logMsg("p2p", "Connection state with "+truncateOnion(peerOnion)+" changed to: "+state)
 	}
 	p2pLogFn := func(line string) {
-		a.send(ui.TorStateMsg{Line: line})
-		if a.web != nil {
-			go a.web.PushLog(line)
-		}
-		if a.program == nil {
-			log.Println("[libp2p]", line)
-		}
+		a.logMsg("libp2p", line)
 	}
 
 	p2pE := p2p.NewEngine(a.db, onion, onMsg, onState, p2pLogFn)
 	p2pE.OnContactUpdated = func() {
-		a.send(ui.ContactsReloadMsg{Contacts: a.getContacts()})
 		if a.web != nil {
 			a.web.PushContactsUpdate()
 		}
 	}
 	if err := p2pE.Start(); err != nil {
-		a.send(ui.ErrorMsg{Err: fmt.Errorf("libp2p start: %w", err)})
-		if a.program == nil {
-			log.Printf("[libp2p] Failed to start libp2p: %v", err)
-		}
+		a.logMsg("error", "libp2p start failed: "+err.Error())
 	} else {
-		if a.program == nil {
-			log.Println("[libp2p] libp2p Engine started successfully")
-		}
+		a.logMsg("libp2p", "libp2p Engine started successfully")
 	}
 	a.p2pEngine = p2pE
 	if a.web != nil {
@@ -327,7 +269,7 @@ func (a *App) startSignalingServer() {
 			}
 			a.torConns[msg.From] = conn
 			a.torConnsMu.Unlock()
-			a.send(ui.TorStateMsg{Line: fmt.Sprintf("[tor-fallback] Persistent Tor stream from %s established", truncateOnion(msg.From))})
+			a.logMsg("tor-fallback", "Persistent Tor stream from "+truncateOnion(msg.From)+" established")
 			go a.readPersistentTorStream(msg.From, conn)
 			return
 		}
@@ -341,40 +283,23 @@ func (a *App) startSignalingServer() {
 				Body:      msg.Body,
 				Timestamp: time.Now(),
 			})
-			a.send(ui.IncomingMsg{From: msg.From, Body: msg.Body})
+			if a.web != nil {
+				go a.web.PushMessage(msg.From, a.getHistory(msg.From))
+			}
 			return
 		}
 		a.onOfferReceived(msg, conn)
 	})
 	a.sigServer = srv
 	if err := srv.Start(); err != nil {
-		a.send(ui.ErrorMsg{Err: fmt.Errorf("sig server: %w", err)})
+		log.Printf("[sig] signaling server start error: %v", err)
 	}
 }
 
 // onOfferReceived handles an incoming offer from a peer dialing our hidden service.
 func (a *App) onOfferReceived(offer tor.SDPOffer, conn net.Conn) {
-	// Auto-accept connection if the sender is a known contact
-	if offer.From != "" {
-		contact, err := a.db.GetContact(offer.From)
-		if err == nil && contact != nil {
-			a.send(ui.TorStateMsg{Line: "[sig] Auto-accepting connection from contact: " + truncateOnion(offer.From)})
-			go a.handleIncomingOffer(offer, conn)
-			return
-		}
-	}
-
-	// If it's a test run or headless receiver test, automatically accept
-	if a.testReceiver || a.testSender != "" {
-		a.handleIncomingOffer(offer, conn)
-		return
-	}
-	// For interactive UI, prompt the user
-	a.send(ui.IncomingConnectionMsg{
-		From:  offer.From,
-		Offer: offer,
-		Conn:  conn,
-	})
+	a.logMsg("sig", fmt.Sprintf("Incoming connection offer from %s (PeerID: %s)", truncateOnion(offer.From), offer.PeerID))
+	go a.handleIncomingOffer(offer, conn)
 }
 
 func (a *App) handleIncomingOffer(offer tor.SDPOffer, conn net.Conn) {
@@ -414,13 +339,12 @@ func (a *App) handleIncomingOffer(offer tor.SDPOffer, conn net.Conn) {
 
 	// Connect to them via libp2p in the background
 	go func() {
-		a.send(ui.IceStateMsg{S: "connecting"})
+		a.logMsg("libp2p", "Connecting back to "+truncateOnion(offer.From)+"...")
 		_, err = a.p2pEngine.Connect(offer.PeerID, offer.Addrs)
 		if err != nil {
-			a.send(ui.IceStateMsg{S: "failed"})
-			a.send(ui.TorStateMsg{Line: "[libp2p] Failed to connect back: " + err.Error()})
+			a.logMsg("libp2p", "Failed to connect back to "+truncateOnion(offer.From)+": "+err.Error())
 		} else {
-			a.send(ui.IceStateMsg{S: "connected"})
+			a.logMsg("libp2p", "Connected back to "+truncateOnion(offer.From))
 			a.sendPendingMessages(offer.From)
 		}
 	}()
@@ -462,7 +386,7 @@ func (a *App) sendMessage(peerID, body string) error {
 				Read:      true,
 			})
 		}
-		a.send(ui.TorStateMsg{Line: "[sig] libp2p send failed, falling back to Tor..."})
+		a.logMsg("sig", "libp2p send failed, falling back to Tor...")
 	}
 
 	// Fallback to Tor direct message delivery
@@ -483,14 +407,14 @@ func (a *App) sendMessage(peerID, body string) error {
 		return err
 	}
 
-	// Deliver in background to avoid blocking BubbleTea
+	// Deliver in background
 	go func() {
 		err := a.sendTorFallback(peerID, body)
 		if err != nil {
-			a.send(ui.TorStateMsg{Line: fmt.Sprintf("[sig] Tor send to %s failed: %v", truncateOnion(peerID), err)})
+			a.logMsg("sig", fmt.Sprintf("Tor send to %s failed: %v", truncateOnion(peerID), err))
 			return
 		}
-		a.send(ui.TorStateMsg{Line: fmt.Sprintf("[sig] Message delivered to %s via Tor", truncateOnion(peerID))})
+		a.logMsg("sig", fmt.Sprintf("Message delivered to %s via Tor", truncateOnion(peerID)))
 		
 		// Mark as delivered in the database
 		msgObj.Read = true
@@ -509,22 +433,22 @@ func truncateOnion(s string) string {
 
 func (a *App) connectPeer(peerID string) {
 	if a.torMgr == nil {
-		a.send(ui.ErrorMsg{Err: fmt.Errorf("tor not ready")})
+		a.logMsg("error", "tor not ready")
 		return
 	}
 
 	contact, err := a.db.GetContact(peerID)
 	if err == nil && contact.Libp2pID != "" && len(contact.Libp2pAddrs) > 0 {
-		a.send(ui.TorStateMsg{Line: "[libp2p] Found cached P2P addresses. Connecting directly..."})
+		a.logMsg("libp2p", "Found cached P2P addresses. Connecting directly...")
 		go func() {
-			a.send(ui.IceStateMsg{S: "connecting"})
+			a.logMsg("libp2p", "Connecting to "+truncateOnion(peerID)+"...")
 			_, err := a.p2pEngine.Connect(contact.Libp2pID, contact.Libp2pAddrs)
 			if err == nil {
-				a.send(ui.IceStateMsg{S: "connected"})
+				a.logMsg("libp2p", "Connected to "+truncateOnion(peerID))
 				a.sendPendingMessages(peerID)
 				return
 			}
-			a.send(ui.TorStateMsg{Line: "[libp2p] Direct connection failed, falling back to Tor handshake..."})
+			a.logMsg("libp2p", "Direct connection failed, falling back to Tor handshake...")
 			a.runTorHandshake(peerID)
 		}()
 	} else {
@@ -534,7 +458,7 @@ func (a *App) connectPeer(peerID string) {
 
 func (a *App) runTorHandshake(peerID string) {
 	if a.p2pEngine == nil {
-		a.send(ui.ErrorMsg{Err: fmt.Errorf("P2P engine not ready")})
+		a.logMsg("error", "P2P engine not ready")
 		return
 	}
 	myID, myAddrs := a.p2pEngine.GetMyInfo()
@@ -545,20 +469,16 @@ func (a *App) runTorHandshake(peerID string) {
 		From:   a.myOnion,
 	}
 
-	// Notify TUI we have an offer
-	b, _ := json.Marshal(offer)
-	a.send(ui.SDPOfferReadyMsg{OfferJSON: string(b)})
-
 	// Try automatic Tor dial
 	proxy := a.torMgr.Proxy()
 	go func() {
-		a.send(ui.TorStateMsg{Line: "[sig] Dialing peer " + truncateOnion(peerID) + " via Tor..."})
+		a.logMsg("sig", "Dialing peer "+truncateOnion(peerID)+" via Tor...")
 		answer, err := tor.Dial(proxy, peerID, signalingPort, offer, 60*time.Second)
 		if err != nil {
-			a.send(ui.TorStateMsg{Line: "[sig] Connection failed: " + err.Error()})
+			a.logMsg("sig", "Connection failed: "+err.Error())
 			return
 		}
-		a.send(ui.TorStateMsg{Line: "[sig] Peer answered! Connecting via libp2p..."})
+		a.logMsg("sig", "Peer answered! Connecting via libp2p...")
 
 		// Save/update contact with remote PeerID and Addrs
 		contact, err := a.db.GetContact(peerID)
@@ -568,13 +488,12 @@ func (a *App) runTorHandshake(peerID string) {
 			a.db.SaveContact(contact)
 		}
 
-		a.send(ui.IceStateMsg{S: "connecting"})
+		a.logMsg("libp2p", "Connecting to "+truncateOnion(peerID)+"...")
 		_, err = a.p2pEngine.Connect(answer.PeerID, answer.Addrs)
 		if err != nil {
-			a.send(ui.IceStateMsg{S: "failed"})
-			a.send(ui.TorStateMsg{Line: "[libp2p] Failed to connect: " + err.Error()})
+			a.logMsg("libp2p", "Failed to connect to "+truncateOnion(peerID)+": "+err.Error())
 		} else {
-			a.send(ui.IceStateMsg{S: "connected"})
+			a.logMsg("libp2p", "Connected to "+truncateOnion(peerID))
 			a.sendPendingMessages(peerID)
 		}
 	}()
@@ -606,13 +525,12 @@ func (a *App) pasteOffer(offerJSON string) error {
 	a.db.SaveContact(contact)
 
 	go func() {
-		a.send(ui.IceStateMsg{S: "connecting"})
+		a.logMsg("libp2p", "Connecting to "+truncateOnion(offer.From)+"...")
 		_, err = a.p2pEngine.Connect(offer.PeerID, offer.Addrs)
 		if err != nil {
-			a.send(ui.IceStateMsg{S: "failed"})
-			a.send(ui.TorStateMsg{Line: "[libp2p] Paste offer connect failed: " + err.Error()})
+			a.logMsg("libp2p", "Paste offer connect failed: "+err.Error())
 		} else {
-			a.send(ui.IceStateMsg{S: "connected"})
+			a.logMsg("libp2p", "Connected to "+truncateOnion(offer.From))
 		}
 	}()
 
@@ -684,12 +602,6 @@ func (a *App) getHistoryPaginated(peerID string, offset, limit int) []*store.Mes
 func (a *App) getContacts() []*store.Contact {
 	contacts, _ := a.db.AllContacts()
 	return contacts
-}
-
-func (a *App) send(msg tea.Msg) {
-	if a.program != nil {
-		a.program.Send(msg)
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -912,7 +824,7 @@ func (a *App) silentConnectPeer(peerID string) {
 	if contact.Libp2pID != "" && len(contact.Libp2pAddrs) > 0 {
 		_, err := a.p2pEngine.Connect(contact.Libp2pID, contact.Libp2pAddrs)
 		if err == nil {
-			a.send(ui.TorStateMsg{Line: fmt.Sprintf("[libp2p] Silently connected to %s", truncateOnion(peerID))})
+			a.logMsg("libp2p", fmt.Sprintf("Silently connected to %s", truncateOnion(peerID)))
 			a.sendPendingMessages(peerID)
 			return
 		}
@@ -949,7 +861,7 @@ func (a *App) silentTorHandshake(peerID string) {
 
 		_, err = a.p2pEngine.Connect(answer.PeerID, answer.Addrs)
 		if err == nil {
-			a.send(ui.TorStateMsg{Line: fmt.Sprintf("[libp2p] Silently connected to %s after handshake", truncateOnion(peerID))})
+			a.logMsg("libp2p", fmt.Sprintf("Silently connected to %s after handshake", truncateOnion(peerID)))
 			a.sendPendingMessages(peerID)
 		}
 	}()
@@ -963,7 +875,7 @@ func (a *App) sendPendingMessages(peerID string) {
 
 	for _, msg := range messages {
 		if msg.From == "me" && !msg.Read {
-			a.send(ui.TorStateMsg{Line: fmt.Sprintf("[queue] Retrying sending pending message to %s...", truncateOnion(peerID))})
+			a.logMsg("queue", fmt.Sprintf("Retrying sending pending message to %s...", truncateOnion(peerID)))
 			var delivered bool
 			contact, err := a.db.GetContact(peerID)
 			if err == nil && contact.Libp2pID != "" {
@@ -982,9 +894,9 @@ func (a *App) sendPendingMessages(peerID string) {
 			if delivered {
 				msg.Read = true
 				_ = a.db.SaveMessage(msg)
-				a.send(ui.TorStateMsg{Line: fmt.Sprintf("[queue] Pending message delivered to %s", truncateOnion(peerID))})
+				a.logMsg("queue", fmt.Sprintf("Pending message delivered to %s", truncateOnion(peerID)))
 			} else {
-				a.send(ui.TorStateMsg{Line: fmt.Sprintf("[queue] Pending message delivery to %s failed, will retry later", truncateOnion(peerID))})
+				a.logMsg("queue", fmt.Sprintf("Pending message delivery to %s failed, will retry later", truncateOnion(peerID)))
 			}
 		}
 	}
@@ -1035,7 +947,7 @@ func (a *App) sendTorFallback(peerID, body string) error {
 			return fmt.Errorf("tor not ready")
 		}
 		proxy := a.torMgr.Proxy()
-		a.send(ui.TorStateMsg{Line: fmt.Sprintf("[tor-fallback] Establishing persistent Tor connection to %s...", truncateOnion(peerID))})
+		a.logMsg("tor-fallback", fmt.Sprintf("Establishing persistent Tor connection to %s...", truncateOnion(peerID)))
 
 		dialTimeout := 30 * time.Second
 		proxyConn, err := net.DialTimeout("tcp", proxy, dialTimeout)
@@ -1096,7 +1008,7 @@ func (a *App) readPersistentTorStream(peerID string, conn net.Conn) {
 			delete(a.torConns, peerID)
 		}
 		a.torConnsMu.Unlock()
-		a.send(ui.TorStateMsg{Line: fmt.Sprintf("[tor-fallback] Persistent Tor stream from %s closed", truncateOnion(peerID))})
+		a.logMsg("tor-fallback", fmt.Sprintf("Persistent Tor stream from %s closed", truncateOnion(peerID)))
 	}()
 
 	dec := json.NewDecoder(conn)
@@ -1113,7 +1025,9 @@ func (a *App) readPersistentTorStream(peerID string, conn net.Conn) {
 				Body:      msg.Body,
 				Timestamp: time.Now(),
 			})
-			a.send(ui.IncomingMsg{From: msg.From, Body: msg.Body})
+			if a.web != nil {
+				go a.web.PushMessage(msg.From, a.getHistory(msg.From))
+			}
 		}
 	}
 }
