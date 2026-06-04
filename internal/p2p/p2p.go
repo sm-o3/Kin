@@ -875,7 +875,20 @@ func (e *Engine) OpenFileStream(ctx context.Context, peerPIDStr string) (io.Read
 }
 
 func CopyWithProgress(dst io.Writer, src io.Reader, totalSize int64, onProgress func(bytesWritten int64)) (int64, error) {
-	buf := make([]byte, 32*1024)
+	bufSize := 32 * 1024
+	if totalSize > 10*1024*1024 { // > 10MB
+		if totalSize <= 100*1024*1024 { // <= 100MB
+			bufSize = 128 * 1024
+		} else if totalSize <= 1024*1024*1024 { // <= 1GB
+			bufSize = 512 * 1024
+		} else if totalSize <= 10*1024*1024*1024 { // <= 10GB
+			bufSize = 1024 * 1024
+		} else { // > 10GB up to 100GB+
+			bufSize = 4 * 1024 * 1024
+		}
+	}
+
+	buf := make([]byte, bufSize)
 	var written int64
 	for {
 		nr, er := src.Read(buf)
