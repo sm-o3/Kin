@@ -15,27 +15,35 @@ $needsRestart = $false
 # Check Git
 if (!(Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Host "[*] Git not found. Installing via winget..." -ForegroundColor Yellow
-    Start-Process winget -ArgumentList "install --id Git.Git -e --source winget --silent" -NoNewWindow -Wait
-    $needsRestart = $true
+    try {
+        Start-Process winget -ArgumentList "install --id Git.Git -e --source winget --silent" -NoNewWindow -Wait
+        $needsRestart = $true
+    } catch {
+        Write-Host "[!] Winget Git installation encountered an issue: $_" -ForegroundColor Yellow
+    }
 }
 
 # Check Go
 if (!(Get-Command go -ErrorAction SilentlyContinue)) {
     Write-Host "[*] Go (Golang) not found. Installing via winget..." -ForegroundColor Yellow
-    Start-Process winget -ArgumentList "install --id GoLang.Go -e --source winget --silent" -NoNewWindow -Wait
-    $needsRestart = $true
+    try {
+        Start-Process winget -ArgumentList "install --id GoLang.Go -e --source winget --silent" -NoNewWindow -Wait
+        $needsRestart = $true
+    } catch {
+        Write-Host "[!] Winget Go installation encountered an issue: $_" -ForegroundColor Yellow
+    }
 }
 
 if ($needsRestart) {
     Write-Host "[!] Windows package installations completed." -ForegroundColor Green
     Write-Host "[!] IMPORTANT: Please close this PowerShell window and open a NEW one to run this script again so that the newly installed Git/Go compiler tools are active." -ForegroundColor Red
-    exit
+    return
 }
 
 # Double check dependencies are working
 if (!(Get-Command git -ErrorAction SilentlyContinue) -or !(Get-Command go -ErrorAction SilentlyContinue)) {
     Write-Host "[!] Error: Dependencies (Git/Go) could not be resolved automatically. Please install Git and Go manually before retrying." -ForegroundColor Red
-    exit
+    return
 }
 
 # 2. Clone and Build
@@ -56,7 +64,7 @@ if (!(Test-Path "kin.exe")) {
     Write-Host "[!] Error: Compilation failed." -ForegroundColor Red
     Set-Location $originalLocation
     Remove-Item -Recurse -Force $tempDir
-    exit
+    return
 }
 
 # 3. Install Binary

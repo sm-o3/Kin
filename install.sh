@@ -36,7 +36,7 @@ check_and_install_fedora() {
     if ! command -v go >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
         echo "[*] Missing dependencies. Installing golang and git..."
         sudo dnf install -y golang git
-    }
+    fi
 }
 
 check_and_install_arch() {
