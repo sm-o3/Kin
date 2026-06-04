@@ -49,12 +49,25 @@ type Callbacks struct {
 	StarMessage          func(peerID, msgID string, starred bool) error
 	ClearAllData         func() error
 	CompactDB            func() error
+	SendFile             func(peerID, filePath, fileName, mimeType string, onProgress func(sent int64)) error
 }
 
 // PushEvent is broadcast to all WebSocket clients.
 type PushEvent struct {
 	Type    string      `json:"type"`
 	Payload interface{} `json:"payload"`
+}
+
+// ProgressEvent is sent to web clients via WebSocket.
+type ProgressEvent struct {
+	ID       string  `json:"id"`
+	From     string  `json:"from"`
+	Name     string  `json:"name"`
+	Recv     int64   `json:"recv"`
+	Total    int64   `json:"total"`
+	SpeedKBs float64 `json:"speed_kbs"`
+	Done     bool    `json:"done"`
+	SavePath string  `json:"save_path,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -65,7 +78,6 @@ type Server struct {
 	cb       Callbacks
 	port     int
 	mediaDir string
-	ftm      *FileTransferManager
 
 	mu      sync.RWMutex
 	clients map[*websocket.Conn]*sync.Mutex
@@ -86,8 +98,11 @@ func New(port int, cb Callbacks) *Server {
 		mediaDir: dir,
 		clients:  make(map[*websocket.Conn]*sync.Mutex),
 	}
-	s.ftm = NewFileTransferManager(dir, s.onFileReceived)
 	return s
+}
+
+func (s *Server) MediaDir() string {
+	return s.mediaDir
 }
 
 func defaultMediaDir() string {
@@ -105,34 +120,6 @@ func defaultMediaDir() string {
 	return filepath.Join(home, "Downloads", "Kin")
 }
 
-// onFileReceived is called by FileTransferManager when assembly is complete.
-func (s *Server) onFileReceived(from, localPath, origName, mimeType string) {
-	log.Printf("[filetransfer] Received '%s' from %s → %s", origName, from[:min8(from)], localPath)
-
-	// Save a display message in the local DB
-	displayMsg := &store.Message{
-		ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
-		From:      from,
-		To:        "me",
-		Body:      fmt.Sprintf("[media-recv:%s]", localPath),
-		MediaName: origName,
-		MediaType: mimeType,
-		Timestamp: time.Now(),
-	}
-	if s.cb.SaveMessage != nil {
-		_ = s.cb.SaveMessage(displayMsg)
-	}
-	msgs := s.cb.GetMessages(from)
-	s.Broadcast(PushEvent{Type: "message", Payload: map[string]interface{}{
-		"peer": from, "messages": msgs,
-	}})
-}
-
-func min8(s string) int {
-	if len(s) < 8 { return len(s) }
-	return 8
-}
-
 // ---------------------------------------------------------------------------
 // Inbound message routing (called from App.onMsg)
 // ---------------------------------------------------------------------------
@@ -141,24 +128,6 @@ func min8(s string) int {
 // Returns (handled bool, progressEvent *ProgressEvent).
 func (s *Server) HandleInboundMessage(from, body string) (bool, *ProgressEvent) {
 	switch {
-	case strings.HasPrefix(body, "[fstart:"):
-		_, ev := s.ftm.HandleStart(from, body)
-		if ev != nil {
-			s.Broadcast(PushEvent{Type: "file_progress", Payload: ev})
-			return true, ev
-		}
-	case strings.HasPrefix(body, "[fchunk:"):
-		_, ev := s.ftm.HandleChunk(from, body)
-		if ev != nil {
-			s.Broadcast(PushEvent{Type: "file_progress", Payload: ev})
-			return true, ev
-		}
-	case strings.HasPrefix(body, "[fend:"):
-		id, savePath := s.ftm.HandleEnd(body)
-		if id != "" {
-			_ = savePath
-			return true, nil
-		}
 	case strings.HasPrefix(body, "[call-sig:"):
 		payload := strings.TrimSuffix(strings.TrimPrefix(body, "[call-sig:"), "]")
 		s.Broadcast(PushEvent{Type: "call_signaling", Payload: map[string]interface{}{
@@ -466,43 +435,42 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	localName := fmt.Sprintf("%d_%s", time.Now().UnixNano(), safeName)
 	localPath := filepath.Join(sentDir, localName)
 
-	// Write to disk
-	buf := make([]byte, 500<<20)
-	n, _ := file.Read(buf)
-	fileData := buf[:n]
-	if err := os.WriteFile(localPath, fileData, 0644); err != nil {
+	// Write to disk via standard streaming copy (no massive buffer allocation!)
+	out, err := os.Create(localPath)
+	if err != nil {
+		jsonErr(w, "save error", http.StatusInternalServerError); return
+	}
+	fileSize, err := io.Copy(out, file)
+	out.Close()
+	if err != nil {
 		jsonErr(w, "save error", http.StatusInternalServerError); return
 	}
 
-	// Build wire messages from saved file
-	msgs, err := BuildTransferMessages(localPath, safeName, mimeType)
-	if err != nil { jsonErr(w, "encode error", http.StatusInternalServerError); return }
-
-	total     := len(msgs)
 	startTime := time.Now()
 
 	// Send in background, push progress events to UI
 	go func() {
-		for i, msg := range msgs {
-			if err := s.cb.SendMessage(peer, msg); err != nil {
-				log.Printf("[filetransfer] chunk %d send error: %v", i, err)
-			}
-			// Push progress for chunk messages (not fstart/fend)
-			if i > 0 && i < total-1 {
-				elapsed  := time.Since(startTime).Seconds()
-				bytesSent := int64(i) * chunkSize
-				if bytesSent > int64(len(fileData)) { bytesSent = int64(len(fileData)) }
-				speed := float64(bytesSent) / 1024 / elapsed
-				if elapsed < 0.01 { speed = 0 }
-				s.Broadcast(PushEvent{Type: "file_upload_progress", Payload: map[string]interface{}{
-					"name":  safeName,
-					"peer":  peer,
-					"sent":  bytesSent,
-					"total": int64(len(fileData)),
-					"speed_kbs": speed,
-					"done": i == total-2,
-				}})
-			}
+		if s.cb.SendFile == nil {
+			log.Printf("[filetransfer] error: SendFile callback not registered")
+			return
+		}
+		err := s.cb.SendFile(peer, localPath, safeName, mimeType, func(bytesSent int64) {
+			elapsed := time.Since(startTime).Seconds()
+			speed := float64(bytesSent) / 1024 / elapsed
+			if elapsed < 0.01 { speed = 0 }
+			s.Broadcast(PushEvent{Type: "file_upload_progress", Payload: map[string]interface{}{
+				"name":      safeName,
+				"peer":      peer,
+				"sent":      bytesSent,
+				"total":     fileSize,
+				"speed_kbs": speed,
+				"done":      bytesSent >= fileSize,
+			}})
+		})
+
+		if err != nil {
+			log.Printf("[filetransfer] send error: %v", err)
+			return
 		}
 
 		// Save display message for sender
@@ -522,7 +490,6 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 
 	jsonOK(w, map[string]interface{}{
 		"ok": true, "name": safeName,
-		"chunks": total - 2, // exclude fstart and fend
 	})
 }
 

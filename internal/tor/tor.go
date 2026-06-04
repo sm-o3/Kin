@@ -282,14 +282,19 @@ type SDPOffer struct {
 
 // SignalingServer listens for incoming JSON SDP offers on hiddenPort.
 type SignalingServer struct {
-	port    int
-	onOffer func(offer SDPOffer, conn net.Conn)
-	l       net.Listener
+	port           int
+	onOffer        func(offer SDPOffer, conn net.Conn)
+	onFileTransfer func(offer SDPOffer, buffered io.Reader, conn net.Conn)
+	l              net.Listener
 }
 
 // NewSignalingServer creates a signaling server.
 func NewSignalingServer(port int, onOffer func(offer SDPOffer, conn net.Conn)) *SignalingServer {
 	return &SignalingServer{port: port, onOffer: onOffer}
+}
+
+func (s *SignalingServer) SetOnFileTransfer(cb func(offer SDPOffer, buffered io.Reader, conn net.Conn)) {
+	s.onFileTransfer = cb
 }
 
 // Start begins accepting connections on 127.0.0.1:port.
@@ -320,6 +325,16 @@ func (s *SignalingServer) handle(conn net.Conn) {
 		return
 	}
 	conn.SetDeadline(time.Time{})
+
+	if offer.Type == "file_transfer_init" {
+		if s.onFileTransfer != nil {
+			s.onFileTransfer(offer, dec.Buffered(), conn)
+		} else {
+			conn.Close()
+		}
+		return
+	}
+
 	if s.onOffer != nil {
 		s.onOffer(offer, conn)
 	} else {

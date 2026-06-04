@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -118,6 +120,7 @@ func main() {
 		CompactDB: func() error {
 			return app.db.Compact(filepath.Join(app.dataDir, "kin.db"))
 		},
+		SendFile: app.sendFile,
 		GetTorStatus: func() string {
 			if app.torMgr != nil && app.myOnion != "" {
 				return "online"
@@ -199,10 +202,7 @@ func (a *App) startTor() {
 
 	// Start libp2p Engine
 	onMsg := func(fromOnion, body string) {
-		if a.web != nil && (strings.HasPrefix(body, "[fstart:") ||
-			strings.HasPrefix(body, "[fchunk:") ||
-			strings.HasPrefix(body, "[fend:") ||
-			strings.HasPrefix(body, "[call-sig:") ||
+		if a.web != nil && (strings.HasPrefix(body, "[call-sig:") ||
 			strings.HasPrefix(body, "[call-stream:")) {
 			handled, _ := a.web.HandleInboundMessage(fromOnion, body)
 			if handled {
@@ -233,6 +233,23 @@ func (a *App) startTor() {
 			a.web.PushContactsUpdate()
 		}
 	}
+	p2pE.SetOnFileStream(func(peerPIDStr string, stream io.ReadWriteCloser) {
+		dec := json.NewDecoder(stream)
+		var hdr p2p.FileHeader
+		if err := dec.Decode(&hdr); err != nil {
+			stream.Close()
+			return
+		}
+		var onion string
+		contact, err := a.db.GetContactByLibp2pID(peerPIDStr)
+		if err == nil && contact != nil {
+			onion = contact.ID
+		} else {
+			onion = peerPIDStr
+		}
+		fileReader := io.MultiReader(dec.Buffered(), stream)
+		go a.handleFileReceive(onion, hdr, fileReader, func() { stream.Close() })
+	})
 	if err := p2pE.Start(); err != nil {
 		a.logMsg("error", "libp2p start failed: "+err.Error())
 	} else {
@@ -289,6 +306,15 @@ func (a *App) startSignalingServer() {
 			return
 		}
 		a.onOfferReceived(msg, conn)
+	})
+	srv.SetOnFileTransfer(func(offer tor.SDPOffer, buffered io.Reader, conn net.Conn) {
+		var hdr p2p.FileHeader
+		if err := json.Unmarshal([]byte(offer.Body), &hdr); err != nil {
+			conn.Close()
+			return
+		}
+		fileReader := io.MultiReader(buffered, conn)
+		go a.handleFileReceive(offer.From, hdr, fileReader, func() { conn.Close() })
 	})
 	a.sigServer = srv
 	if err := srv.Start(); err != nil {
@@ -1031,3 +1057,224 @@ func (a *App) readPersistentTorStream(peerID string, conn net.Conn) {
 		}
 	}
 }
+
+func (a *App) sendFile(peerID, filePath, fileName, mimeType string, onProgress func(sent int64)) error {
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		return err
+	}
+	fileSize := fileInfo.Size()
+	id := fmt.Sprintf("ft%d", time.Now().UnixNano())
+
+	contact, err := a.db.GetContact(peerID)
+	if err == nil && contact.Libp2pID != "" && a.p2pEngine.IsConnected(contact.Libp2pID) {
+		go func() {
+			err := a.sendFileLibp2p(contact.Libp2pID, id, filePath, fileName, mimeType, fileSize, onProgress)
+			if err != nil {
+				a.logMsg("filetransfer-error", "P2P file transfer failed: "+err.Error())
+			}
+		}()
+		return nil
+	}
+
+	if a.torMgr != nil {
+		go func() {
+			err := a.sendFileTor(peerID, id, filePath, fileName, mimeType, fileSize, onProgress)
+			if err != nil {
+				a.logMsg("filetransfer-error", "Tor file transfer failed: "+err.Error())
+			}
+		}()
+		return nil
+	}
+
+	return fmt.Errorf("no transport available")
+}
+
+func (a *App) sendFileLibp2p(peerPIDStr, id, filePath, fileName, mimeType string, fileSize int64, onProgress func(sent int64)) error {
+	a.logMsg("filetransfer", "Opening libp2p file stream to "+peerPIDStr[:8]+"...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	stream, err := a.p2pEngine.OpenFileStream(ctx, peerPIDStr)
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+
+	hdr := p2p.FileHeader{
+		ID:   id,
+		Name: fileName,
+		Mime: mimeType,
+		Size: fileSize,
+	}
+
+	enc := json.NewEncoder(stream)
+	if err := enc.Encode(hdr); err != nil {
+		return err
+	}
+
+	f, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = p2p.CopyWithProgress(stream, f, fileSize, onProgress)
+	if err != nil {
+		return err
+	}
+
+	a.logMsg("filetransfer", "P2P file transfer completed successfully for "+fileName)
+	return nil
+}
+
+func (a *App) sendFileTor(peerID, id, filePath, fileName, mimeType string, fileSize int64, onProgress func(sent int64)) error {
+	a.logMsg("filetransfer", "Establishing Tor connection for file transfer to "+truncateOnion(peerID)+"...")
+
+	proxy := a.torMgr.Proxy()
+	dialTimeout := 30 * time.Second
+	proxyConn, err := net.DialTimeout("tcp", proxy, dialTimeout)
+	if err != nil {
+		return fmt.Errorf("dial Tor proxy: %w", err)
+	}
+
+	target := fmt.Sprintf("%s:%d", peerID, signalingPort)
+	if err := tor.Socks5Connect(proxyConn, target, dialTimeout); err != nil {
+		proxyConn.Close()
+		return fmt.Errorf("Tor connect: %w", err)
+	}
+
+	hdr, _ := json.Marshal(p2p.FileHeader{
+		ID:   id,
+		Name: fileName,
+		Mime: mimeType,
+		Size: fileSize,
+	})
+
+	initMsg := tor.SDPOffer{
+		Type: "file_transfer_init",
+		From: a.myOnion,
+		Body: string(hdr),
+	}
+
+	proxyConn.SetDeadline(time.Now().Add(15 * time.Second))
+	if err := json.NewEncoder(proxyConn).Encode(initMsg); err != nil {
+		proxyConn.Close()
+		return fmt.Errorf("send init: %w", err)
+	}
+	proxyConn.SetDeadline(time.Time{})
+
+	f, err := os.Open(filePath)
+	if err != nil {
+		proxyConn.Close()
+		return err
+	}
+	defer f.Close()
+
+	_, err = p2p.CopyWithProgress(proxyConn, f, fileSize, onProgress)
+	proxyConn.Close()
+	if err != nil {
+		return err
+	}
+
+	a.logMsg("filetransfer", "Tor file transfer completed successfully for "+fileName)
+	return nil
+}
+
+func (a *App) handleFileReceive(fromOnion string, hdr p2p.FileHeader, r io.Reader, closeFn func()) {
+	if closeFn != nil {
+		defer closeFn()
+	}
+
+	a.logMsg("filetransfer", fmt.Sprintf("Receiving file '%s' (%d bytes) from %s...", hdr.Name, hdr.Size, truncateOnion(fromOnion)))
+
+	mediaDir := a.web.MediaDir()
+	recvDir := filepath.Join(mediaDir, "recv")
+	_ = os.MkdirAll(recvDir, 0755)
+
+	safeName := fmt.Sprintf("%d_%s", time.Now().UnixNano(), filepath.Base(hdr.Name))
+	destPath := filepath.Join(recvDir, safeName)
+
+	f, err := os.Create(destPath)
+	if err != nil {
+		a.logMsg("filetransfer-error", "Failed to create destination file: "+err.Error())
+		return
+	}
+	defer f.Close()
+
+	startTime := time.Now()
+
+	// Broadcast starting progress event
+	a.web.Broadcast(webserver.PushEvent{
+		Type: "file_progress",
+		Payload: webserver.ProgressEvent{
+			ID:    hdr.ID,
+			From:  fromOnion,
+			Name:  hdr.Name,
+			Recv:  0,
+			Total: hdr.Size,
+		},
+	})
+
+	// Copy bytes with progress callback
+	_, err = p2p.CopyWithProgress(f, r, hdr.Size, func(bytesWritten int64) {
+		elapsed := time.Since(startTime).Seconds()
+		var speed float64
+		if elapsed > 0.01 {
+			speed = float64(bytesWritten) / 1024 / elapsed
+		}
+		a.web.Broadcast(webserver.PushEvent{
+			Type: "file_progress",
+			Payload: webserver.ProgressEvent{
+				ID:       hdr.ID,
+				From:     fromOnion,
+				Name:     hdr.Name,
+				Recv:     bytesWritten,
+				Total:    hdr.Size,
+				SpeedKBs: speed,
+				Done:     bytesWritten >= hdr.Size,
+			},
+		})
+	})
+
+	if err != nil {
+		a.logMsg("filetransfer-error", "File transfer interrupted: "+err.Error())
+		os.Remove(destPath) // clean up partial file
+		return
+	}
+
+	a.logMsg("filetransfer", "File received successfully: "+hdr.Name)
+
+	// Trigger on-complete database insertion and UI reload
+	relPath := filepath.Join("recv", safeName)
+
+	// Save message to DB
+	displayMsg := &store.Message{
+		ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
+		From:      fromOnion,
+		To:        "me",
+		Body:      fmt.Sprintf("[media-recv:%s]", relPath),
+		MediaName: hdr.Name,
+		MediaType: hdr.Mime,
+		Timestamp: time.Now(),
+	}
+	_ = a.db.SaveMessage(displayMsg)
+
+	// Push messages history update
+	if a.web != nil {
+		a.web.Broadcast(webserver.PushEvent{
+			Type: "file_progress",
+			Payload: webserver.ProgressEvent{
+				ID:    hdr.ID,
+				From:  fromOnion,
+				Name:  hdr.Name,
+				Recv:  hdr.Size,
+				Total: hdr.Size,
+				Done:  true,
+			},
+		})
+		a.web.PushMessage(fromOnion, a.getHistory(fromOnion))
+	}
+}
+

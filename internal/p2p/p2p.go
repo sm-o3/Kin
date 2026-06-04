@@ -34,6 +34,14 @@ func init() {
 }
 
 const protocolID = "/kin/chat/1.0.0"
+const FileProtocolID = "/kin/file/1.0.0"
+
+type FileHeader struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Mime string `json:"mime"`
+	Size int64  `json:"size"`
+}
 
 // Default IPFS/libp2p bootstrap nodes for peer discovery and relay support.
 var defaultBootstrapPeers = []string{
@@ -57,6 +65,7 @@ type Engine struct {
 	onState    func(peerOnion, state string)
 	logFn      func(line string)
 	OnContactUpdated func()
+	onFileStream func(peerPIDStr string, stream io.ReadWriteCloser)
 
 	mu       sync.Mutex
 	streams  map[peer.ID]network.Stream
@@ -189,6 +198,7 @@ func (e *Engine) Start() error {
 
 	// Setup incoming stream handler
 	h.SetStreamHandler(protocolID, e.handleStream)
+	h.SetStreamHandler(FileProtocolID, e.handleFileStream)
 
 	// Async bootstrap to connect to DHT and circuit relays
 	go e.bootstrap()
@@ -832,3 +842,69 @@ func ExtractOnionFromAddrs(addrs []string) string {
 	}
 	return ""
 }
+
+func (e *Engine) SetOnFileStream(cb func(peerPIDStr string, stream io.ReadWriteCloser)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onFileStream = cb
+}
+
+func (e *Engine) handleFileStream(s network.Stream) {
+	remotePID := s.Conn().RemotePeer().String()
+	e.log(fmt.Sprintf("[libp2p] Inbound file stream established from %s", remotePID[:min(8, len(remotePID))]))
+	e.mu.Lock()
+	cb := e.onFileStream
+	e.mu.Unlock()
+	if cb != nil {
+		cb(remotePID, s)
+	} else {
+		s.Reset()
+	}
+}
+
+func (e *Engine) GetHost() host.Host {
+	return e.host
+}
+
+func (e *Engine) OpenFileStream(ctx context.Context, peerPIDStr string) (io.ReadWriteCloser, error) {
+	pid, err := peer.Decode(peerPIDStr)
+	if err != nil {
+		return nil, err
+	}
+	return e.host.NewStream(ctx, pid, FileProtocolID)
+}
+
+func CopyWithProgress(dst io.Writer, src io.Reader, totalSize int64, onProgress func(bytesWritten int64)) (int64, error) {
+	buf := make([]byte, 32*1024)
+	var written int64
+	for {
+		nr, er := src.Read(buf)
+		if nr > 0 {
+			nw, ew := dst.Write(buf[0:nr])
+			if nw < 0 || nr < nw {
+				nw = 0
+				if ew == nil {
+					ew = fmt.Errorf("invalid write result")
+				}
+			}
+			written += int64(nw)
+			if ew != nil {
+				return written, ew
+			}
+			if nr != nw {
+				return written, io.ErrShortWrite
+			}
+			if onProgress != nil {
+				onProgress(written)
+			}
+		}
+		if er != nil {
+			if er == io.EOF {
+				break
+			}
+			return written, er
+		}
+	}
+	return written, nil
+}
+
