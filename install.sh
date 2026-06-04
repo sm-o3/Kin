@@ -40,7 +40,15 @@ case "$ARCH_TYPE" in
         ;;
 esac
 
+# Get the latest release tag from GitHub API, fallback to v1.0.0
 TAG="v1.0.0"
+if command -v curl >/dev/null 2>&1; then
+    LATEST_TAG=$(curl -s https://api.github.com/repos/sm-o3/Kin/releases/latest | grep '"tag_name":' | cut -d'"' -f4)
+    if [ -n "$LATEST_TAG" ]; then
+        TAG="$LATEST_TAG"
+    fi
+fi
+
 ASSET_NAME=""
 if [ "$OS_TYPE" = "android" ] && [ "$ARCH_TYPE" = "arm64" ]; then
     ASSET_NAME="kin-android-arm64.tar.gz"

@@ -110,6 +110,14 @@ $isAmd64 = ($env:PROCESSOR_ARCHITECTURE -eq "AMD64") -or ($env:PROCESSOR_ARCHITE
 
 if ($isAmd64) {
     $tag = "v1.0.0"
+    try {
+        $apiResponse = Invoke-RestMethod -Uri "https://api.github.com/repos/sm-o3/Kin/releases/latest" -UseBasicParsing -ErrorAction Stop
+        if ($apiResponse -and $apiResponse.tag_name) {
+            $tag = $apiResponse.tag_name
+        }
+    } catch {
+        # Fallback to hardcoded tag if offline or API fails
+    }
     $assetName = "kin-windows-amd64.zip"
     $url = "https://github.com/sm-o3/Kin/releases/download/$tag/$assetName"
     
