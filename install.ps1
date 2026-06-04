@@ -7,8 +7,130 @@ Write-Host "==============================================" -ForegroundColor Blu
 Write-Host "          Kin Installer for Windows           " -ForegroundColor Blue
 Write-Host "==============================================" -ForegroundColor Blue
 
-# 1. Dependency Checks & Setup
-Write-Host "[*] Checking dependencies..."
+$installDir = Join-Path $HOME "AppData\Local\Programs\Kin"
+
+# --- Helper Functions ---
+
+function Install-Tor {
+    param(
+        [string]$InstallDir,
+        [string]$TempDir
+    )
+    
+    if (!(Get-Command tor -ErrorAction SilentlyContinue) -and !(Test-Path (Join-Path $InstallDir "tor.exe"))) {
+        Write-Host "[*] tor.exe not found in PATH or local directory. Downloading Tor Expert Bundle..." -ForegroundColor Yellow
+        $torUrl = "https://archive.torproject.org/tor-package-archive/torbrowser/13.5.1/tor-expert-bundle-windows-x86_64-13.5.1.tar.gz"
+        $torArchive = Join-Path $TempDir "tor.tar.gz"
+        
+        try {
+            # Download
+            Invoke-WebRequest -Uri $torUrl -OutFile $torArchive -Verbose:$false -ErrorAction Stop
+            
+            # Extract using native tar tool on Windows
+            Write-Host "[*] Extracting Tor binary..."
+            Start-Process tar -ArgumentList "-xzf `"$torArchive`" -C `"$TempDir`"" -NoNewWindow -Wait
+            
+            # Find tor.exe and copy all files in its directory (including DLLs and geoip data) to InstallDir
+            $extractedTor = Get-ChildItem -Path $TempDir -Filter "tor.exe" -Recurse | Select-Object -First 1
+            if ($extractedTor) {
+                $torFolder = $extractedTor.Directory.FullName
+                Write-Host "[*] Copying Tor files and libraries..."
+                Copy-Item (Join-Path $torFolder "*") $InstallDir -Force -Recurse
+                Write-Host "[+] Installed Tor binaries and dependencies into Kin program directory." -ForegroundColor Green
+            } else {
+                Write-Host "[!] Warning: tor.exe not found in extracted archive. You may need to install Tor manually." -ForegroundColor Red
+            }
+        } catch {
+            Write-Host "[!] Warning: Failed to download/extract Tor: $_" -ForegroundColor Red
+            Write-Host "You may need to install Tor manually and add it to your PATH." -ForegroundColor Red
+        }
+    }
+}
+
+function Add-ToPath {
+    param(
+        [string]$InstallDir
+    )
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ($userPath -notlike "*$InstallDir*") {
+        $newUserPath = $userPath
+        if (!$newUserPath.EndsWith(";")) {
+            $newUserPath += ";"
+        }
+        $newUserPath += $InstallDir
+        [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
+        Write-Host "[+] Registered Kin installation directory in User PATH environment variable." -ForegroundColor Green
+    }
+}
+
+# --- Precompiled Release Download Attempt ---
+$downloadSuccess = $false
+$isAmd64 = ($env:PROCESSOR_ARCHITECTURE -eq "AMD64") -or ($env:PROCESSOR_ARCHITEW6432 -eq "AMD64")
+
+if ($isAmd64) {
+    $tag = "v1.0.0"
+    $assetName = "kin-windows-amd64.zip"
+    $url = "https://github.com/sm-o3/Kin/releases/download/$tag/$assetName"
+    
+    $tempDir = Join-Path $env:TEMP ("kin-download-" + (New-Guid).ToString().Substring(0,8))
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    $zipPath = Join-Path $tempDir $assetName
+    
+    Write-Host "[*] Attempting to download pre-compiled binary: $assetName..." -ForegroundColor Green
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $zipPath -Verbose:$false -ErrorAction Stop
+        $downloadSuccess = $true
+    } catch {
+        Write-Host "[!] Pre-compiled binary download not available or failed. Falling back to build from source." -ForegroundColor Yellow
+        Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
+    }
+    
+    if ($downloadSuccess) {
+        Write-Host "[+] Download successful! Extracting binary..." -ForegroundColor Green
+        try {
+            Expand-Archive -Path $zipPath -DestinationPath $tempDir -Force
+            
+            # Find the binary inside the extracted files
+            $extractedExe = Get-ChildItem -Path $tempDir -Filter "kin*.exe" -Recurse | Select-Object -First 1
+            if ($extractedExe) {
+                Write-Host "[*] Installing binary to: $installDir"
+                New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+                Copy-Item $extractedExe.FullName (Join-Path $installDir "kin.exe") -Force
+                
+                # Check / install Tor
+                Install-Tor -InstallDir $installDir -TempDir $tempDir
+                
+                # Add to User PATH
+                Add-ToPath -InstallDir $installDir
+                
+                # Cleanup
+                Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
+                
+                Write-Host ""
+                Write-Host "==============================================" -ForegroundColor Green
+                Write-Host "  🎉 Kin installed successfully!" -ForegroundColor Green
+                Write-Host "==============================================" -ForegroundColor Green
+                Write-Host "[+] Binary path: $installDir\kin.exe"
+                Write-Host ""
+                Write-Host "NOTE: Please open a NEW terminal window/tab to start using 'kin'."
+                Write-Host "Run 'kin' to start the application and access the Web UI at http://127.0.0.1:8080"
+                Write-Host ""
+                return
+            } else {
+                Write-Host "[!] Error: kin.exe not found in downloaded archive. Falling back to build from source." -ForegroundColor Yellow
+            }
+        } catch {
+            Write-Host "[!] Extraction or installation of precompiled binary failed: $_" -ForegroundColor Yellow
+            Write-Host "Falling back to build from source." -ForegroundColor Yellow
+        }
+        Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
+    }
+} else {
+    Write-Host "[*] Unsupported architecture for precompiled binary. Falling back to build from source." -ForegroundColor Yellow
+}
+
+# --- Source Build Fallback (Requires Go and Git) ---
+Write-Host "[*] Checking source build dependencies..."
 
 $needsRestart = $false
 
@@ -42,11 +164,10 @@ if ($needsRestart) {
 
 # Double check dependencies are working
 if (!(Get-Command git -ErrorAction SilentlyContinue) -or !(Get-Command go -ErrorAction SilentlyContinue)) {
-    Write-Host "[!] Error: Dependencies (Git/Go) could not be resolved automatically. Please install Git and Go manually before retrying." -ForegroundColor Red
+    Write-Host "[!] Error: Dependencies (Git/Go) could not be resolved automatically. Please install Git and Go manually retrying." -ForegroundColor Red
     return
 }
 
-# 2. Clone and Build
 $tempDir = Join-Path $env:TEMP ("kin-build-" + (New-Guid).ToString().Substring(0,8))
 Write-Host "[*] Creating temporary build directory: $tempDir"
 New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
@@ -67,50 +188,17 @@ if (!(Test-Path "kin.exe")) {
     return
 }
 
-# 3. Install Binary
-$installDir = Join-Path $HOME "AppData\Local\Programs\Kin"
 Write-Host "[*] Installing binary to: $installDir"
 New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 Copy-Item "kin.exe" (Join-Path $installDir "kin.exe") -Force
 
-# 3.1 Install Tor on Windows
-if (!(Get-Command tor -ErrorAction SilentlyContinue) -and !(Test-Path (Join-Path $installDir "tor.exe"))) {
-    Write-Host "[*] tor.exe not found in PATH or local directory. Downloading Tor Expert Bundle..." -ForegroundColor Yellow
-    $torUrl = "https://archive.torproject.org/tor-package-archive/torbrowser/13.5.1/tor-expert-bundle-windows-x86_64-13.5.1.tar.gz"
-    $torArchive = Join-Path $tempDir "tor.tar.gz"
-    
-    # Download
-    Invoke-WebRequest -Uri $torUrl -OutFile $torArchive -Verbose:$false
-    
-    # Extract using native tar tool on Windows
-    Write-Host "[*] Extracting Tor binary..."
-    Start-Process tar -ArgumentList "-xzf `"$torArchive`" -C `"$tempDir`"" -NoNewWindow -Wait
-    
-    # Find tor.exe and copy all files in its directory (including DLLs and geoip data) to installDir
-    $extractedTor = Get-ChildItem -Path $tempDir -Filter "tor.exe" -Recurse | Select-Object -First 1
-    if ($extractedTor) {
-        $torFolder = $extractedTor.Directory.FullName
-        Write-Host "[*] Copying Tor files and libraries..."
-        Copy-Item (Join-Path $torFolder "*") $installDir -Force -Recurse
-        Write-Host "[+] Installed Tor binaries and dependencies into Kin program directory." -ForegroundColor Green
-    } else {
-        Write-Host "[!] Warning: tor.exe not found in extracted archive. You may need to install Tor manually." -ForegroundColor Red
-    }
-}
+# Check / install Tor
+Install-Tor -InstallDir $installDir -TempDir $tempDir
 
 # Add to User PATH
-$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-if ($userPath -notlike "*$installDir*") {
-    $newUserPath = $userPath
-    if (!$newUserPath.EndsWith(";")) {
-        $newUserPath += ";"
-    }
-    $newUserPath += $installDir
-    [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
-    Write-Host "[+] Registered Kin installation directory in User PATH environment variable." -ForegroundColor Green
-}
+Add-ToPath -InstallDir $installDir
 
-# 4. Cleanup
+# Cleanup
 Set-Location $originalLocation
 Write-Host "[*] Cleaning up temporary files..."
 Remove-Item -Recurse -Force $tempDir
