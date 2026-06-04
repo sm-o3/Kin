@@ -1,0 +1,16 @@
+# Compiled binaries
+kin
+kin-arm64
+
+# Databases & local data
+*.db
+*.db-journal
+.kin/
+
+# IDE & system files
+.idea/
+.vscode/
+.DS_Store
+
+# Scratch/temporary development files
+scratch/

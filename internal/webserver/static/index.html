@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="description" content="Kin — Secure P2P Chat">
+  <meta name="theme-color" content="#111827">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Kin — Premium Chat</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ══ Sidebar ══════════════════════════════════════════════════════════ -->
+  <div id="sidebar">
+    <div class="sb-top">
+      <div class="logo-container">
+        <span class="logo">Kin</span>
+      </div>
+      <div class="status-pill">
+        <span class="dot" id="tor-dot"></span>
+        <span id="tor-lbl">connecting…</span>
+      </div>
+      <button class="icon-btn" onclick="openAddContact()" title="Add New Contact" aria-label="New Contact">
+        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path d="M12 4v16m8-8H4"/>
+        </svg>
+      </button>
+    </div>
+
+    <div id="search-wrap">
+      <div class="search-input-container">
+        <svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+        </svg>
+        <input id="contact-search" type="search" placeholder="Search contacts…" autocomplete="off">
+      </div>
+    </div>
+
+    <div id="contact-list"></div>
+
+    <div class="sb-foot">
+      <div class="sb-identity-section">
+        <div class="identity-row" onclick="copyOnion()" title="Click to copy Onion Address">
+          <span class="id-label">Tor Onion:</span>
+          <span id="my-onion" class="id-val">—</span>
+        </div>
+        <div class="identity-row" onclick="copyPeerID()" title="Click to copy Libp2p Peer ID (for DHT/LAN discovery)">
+          <span class="id-label">Peer ID:</span>
+          <span id="my-peer-id" class="id-val">—</span>
+        </div>
+      </div>
+      <button class="settings-btn-foot" onclick="openSettings()" title="Settings" aria-label="Settings">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" class="svg-icon">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- ══ Chat Area ════════════════════════════════════════════════════════ -->
+  <div id="chat-area">
+
+    <!-- Empty state -->
+    <div id="no-chat">
+      <div class="bi">💬</div>
+      <h3>Select a conversation to start</h3>
+      <button class="btn-ghost" onclick="openAddContact()">Create Contact</button>
+    </div>
+
+    <!-- Chat panel -->
+    <div id="chat-panel" style="display:none;flex:1;flex-direction:column;overflow:hidden">
+
+      <div id="chat-header">
+        <button id="ch-back" onclick="showSidebar()" aria-label="Back">
+          <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/>
+          </svg>
+        </button>
+        <button id="toggle-sidebar-btn" onclick="toggleSidebar()" title="Toggle Side Panel" aria-label="Toggle Side Panel">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/>
+          </svg>
+        </button>
+        <div class="ava" id="chat-ava">?</div>
+        <div style="flex:1;min-width:0">
+          <div id="chat-peer-name">—</div>
+          <div id="chat-peer-status" title="Peer Address">—</div>
+        </div>
+        <div class="ch-actions">
+          <button class="icon-btn" onclick="initiateCall('audio')" title="Audio Call" aria-label="Audio Call">
+            <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.94.725l.548 2.2a1 1 0 01-.321.988l-1.305.98a10.582 10.582 0 004.872 4.872l.98-1.305a1 1 0 01.988-.321l2.2.548a1 1 0 01.725.94V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"/>
+            </svg>
+          </button>
+          <button class="icon-btn" onclick="initiateCall('video')" title="Video Call" aria-label="Video Call">
+            <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+            </svg>
+          </button>
+          <div class="dropdown-wrap">
+            <button class="icon-btn" onclick="toggleHeaderDropdown(event)" title="More options" aria-label="More Actions">
+              <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 5h.01M12 12h.01M12 19h.01"/>
+              </svg>
+            </button>
+            <div class="dropdown-menu" id="header-dropdown">
+              <button class="dropdown-item" onclick="connectPeer()">
+                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+                Connect
+              </button>
+              <button class="dropdown-item" onclick="openEditContact()">
+                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
+                Edit Nickname
+              </button>
+              <button class="dropdown-item" onclick="clearChat()">
+                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                Clear History
+              </button>
+              <button class="dropdown-item danger" onclick="deleteContact()">
+                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                Remove Contact
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Messages -->
+      <div id="messages" role="log" aria-live="polite"></div>
+
+      <!-- Input Section -->
+      <div id="input-wrap">
+        <!-- Reply Preview Bar -->
+        <div id="reply-preview-bar" style="display:none">
+          <div class="reply-preview-indicator"></div>
+          <div class="reply-preview-content">
+            <div class="reply-preview-title">Reply to message</div>
+            <div id="reply-preview-text">...</div>
+          </div>
+          <button class="reply-preview-close" onclick="cancelReply()">&times;</button>
+        </div>
+        <div id="input-row">
+          <button class="input-attach-btn" id="attach-btn" onclick="openAttachmentSheet()" title="Share files/media" aria-label="Attachments">
+            <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M18.364 5.636l-3.536 3.536m0 0A4 4 0 1111.3 3.3l3.536 3.536m0 0L8.8 12.8a6 6 0 108.485 8.485l4.95-4.95"/>
+            </svg>
+          </button>
+          
+          <div id="record-status" style="display:none; align-items:center; flex:1; gap:10px; color:var(--text); font-size:14px; padding-left:10px;">
+            <span class="record-dot" style="width:10px; height:10px; border-radius:50%; background:red; display:inline-block; animation: blink 1s infinite;"></span>
+            <span>Recording: <span id="record-timer">00:00</span></span>
+          </div>
+
+          <textarea id="msg-input" rows="1"
+            placeholder="Write a message…"
+            onkeydown="inputKey(event)"
+            oninput="handleInputEvent()"></textarea>
+
+          <button id="record-cancel-btn" onclick="cancelRecord()" aria-label="Cancel Recording" style="display:none; color:var(--text-muted); background:none; border:none; padding:8px; cursor:pointer;">
+            <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+            </svg>
+          </button>
+
+          <button id="record-btn" onclick="toggleRecord()" aria-label="Record Voice">
+            <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 0 0 6-6v-1.5m-6 7.5a6 6 0 0 1-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 0 1-3-3V4.5a3 3 0 1 1 6 0v8.25a3 3 0 0 1-3 3Z" />
+            </svg>
+          </button>
+
+          <button id="send-btn" onclick="sendMsg()" aria-label="Send Message" style="display:none;">
+            <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="transform: rotate(45deg); margin-left: -2px; margin-top: -1px;">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+    </div><!-- /chat-panel -->
+
+    <!-- Log strip -->
+    <div id="log-bar">Ready.</div>
+
+  </div><!-- /chat-area -->
+</div><!-- /app -->
+
+<!-- ══ Add Contact Modal ══════════════════════════════════════════════════ -->
+<div class="overlay" id="modal-add" role="dialog">
+  <div class="modal">
+    <h3>Add Contact</h3>
+    <div class="fg">
+      <label for="ac-onion">Onion Address</label>
+      <input id="ac-onion" type="text" placeholder="xxxx….onion" spellcheck="false" autocomplete="off"
+             onkeydown="if(event.key==='Enter') addContact()">
+    </div>
+    <div class="fg">
+      <label for="ac-peerid">Libp2p Peer ID <small style="color:var(--text-muted)">(optional / for DHT restore)</small></label>
+      <div style="display: flex; gap: 8px;">
+        <input id="ac-peerid" type="text" placeholder="12D3KooW..." spellcheck="false" autocomplete="off" style="flex: 1;"
+               onkeydown="if(event.key==='Enter') addContact()">
+        <button class="btn-sec" onclick="resolveOnionFromDHT('ac-peerid', 'ac-onion')" style="padding: 0 12px; font-size: 13px;">Resolve</button>
+      </div>
+    </div>
+    <div class="fg">
+      <label for="ac-nick">Nickname <small style="color:var(--text-muted)">(optional)</small></label>
+      <input id="ac-nick" type="text" placeholder="Alice"
+             onkeydown="if(event.key==='Enter') addContact()">
+    </div>
+    <div class="modal-btns">
+      <button class="btn-ghost" onclick="closeModal('modal-add')">Cancel</button>
+      <button class="btn-prim" onclick="addContact()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ Edit Contact Modal ══════════════════════════════════════════════════ -->
+<div class="overlay" id="modal-edit" role="dialog">
+  <div class="modal">
+    <h3>Edit Contact</h3>
+    <div class="fg">
+      <label for="ec-onion">Onion Address</label>
+      <div style="display: flex; gap: 8px;">
+        <input id="ec-onion" type="text" readonly style="opacity: 0.6; cursor: not-allowed; flex: 1;">
+        <button id="ec-onion-unlock" class="btn-sec" onclick="document.getElementById('ec-onion').removeAttribute('readonly'); document.getElementById('ec-onion').style.opacity = 1; document.getElementById('ec-onion').style.cursor = 'text'; this.style.display = 'none';" style="padding: 0 12px; font-size: 13px;">Edit</button>
+      </div>
+    </div>
+    <div class="fg">
+      <label for="ec-peerid">Libp2p Peer ID</label>
+      <div style="display: flex; gap: 8px;">
+        <input id="ec-peerid" type="text" placeholder="12D3KooW..." spellcheck="false" autocomplete="off" style="flex: 1;"
+               onkeydown="if(event.key==='Enter') saveEditContact()">
+        <button class="btn-sec" onclick="resolveOnionFromDHT('ec-peerid', 'ec-onion')" style="padding: 0 12px; font-size: 13px;">Resolve</button>
+      </div>
+    </div>
+    <div class="fg">
+      <label for="ec-nick">Nickname</label>
+      <input id="ec-nick" type="text" placeholder="Alice"
+             onkeydown="if(event.key==='Enter') saveEditContact()">
+    </div>
+    <div class="modal-btns">
+      <button class="btn-ghost" onclick="closeModal('modal-edit')">Cancel</button>
+      <button class="btn-prim" onclick="saveEditContact()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ Attachment Bottom Sheet ═════════════════════════════════════════════ -->
+<div class="bottom-sheet-overlay" id="sheet-attachment" role="dialog" onclick="if(event.target===this) closeAttachmentSheet()">
+  <div class="bottom-sheet">
+    <div class="sheet-header">
+      <span class="sheet-title">Share Media & Files</span>
+      <button class="sheet-close" onclick="closeAttachmentSheet()">&times;</button>
+    </div>
+    <div class="sheet-grid">
+      <button class="sheet-item" onclick="triggerAttachment('image/*')">
+        <div class="sheet-icon-wrap">🖼️</div>
+        <span class="sheet-label">Images</span>
+      </button>
+      <button class="sheet-item" onclick="triggerAttachment('video/*')">
+        <div class="sheet-icon-wrap">🎥</div>
+        <span class="sheet-label">Videos</span>
+      </button>
+      <button class="sheet-item" onclick="triggerAttachment('audio/*')">
+        <div class="sheet-icon-wrap">🎵</div>
+        <span class="sheet-label">Audio</span>
+      </button>
+      <button class="sheet-item" onclick="triggerAttachment('application/pdf,application/msword,text/*')">
+        <div class="sheet-icon-wrap">📄</div>
+        <span class="sheet-label">Docs</span>
+      </button>
+      <button class="sheet-item" onclick="triggerAttachment('*/*')">
+        <div class="sheet-icon-wrap">📎</div>
+        <span class="sheet-label">Files</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ Incoming Call Modal ════════════════════════════════════════════════ -->
+<div class="overlay" id="modal-incoming-call" role="dialog">
+  <div class="modal call-modal">
+    <div class="call-avatar" id="inc-call-avatar">K</div>
+    <h3 id="inc-call-title">Incoming Video Call</h3>
+    <p id="inc-call-peer-id">ezkbqolames...</p>
+    <div class="modal-btns call-btns">
+      <button class="btn-danger" id="btn-decline" onclick="rejectCall()">Decline</button>
+      <button class="btn-success" id="btn-answer" onclick="acceptCall()">Answer</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ Active Call Screen ════════════════════════════════════════════════ -->
+<div class="call-screen" id="call-screen">
+  <!-- Video elements -->
+  <div class="video-container" id="video-container">
+    <video id="remote-video" autoplay playsinline></video>
+    <video id="local-video" autoplay playsinline muted class="pip"></video>
+  </div>
+  
+  <!-- Audio call display -->
+  <div class="audio-call-display" id="audio-call-display">
+    <div class="call-avatar large pulsing" id="active-call-avatar">K</div>
+    <h2 id="active-call-name">Calling Xiaomi 14...</h2>
+    <div class="call-timer" id="call-timer">00:00</div>
+  </div>
+
+  <!-- Call controls -->
+  <div class="call-controls">
+    <button class="control-btn" id="btn-toggle-mic" onclick="toggleMic()" title="Mute/Unmute Mic">
+      <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+      </svg>
+    </button>
+    <button class="control-btn" id="btn-toggle-cam" onclick="toggleCam()" title="Enable/Disable Video">
+      <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+      </svg>
+    </button>
+    <button class="control-btn hangup" onclick="hangupCall()" title="End Call">
+      <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M16 8l2 2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z"/>
+      </svg>
+    </button>
+  </div>
+</div>
+
+<!-- Hidden file input -->
+<input type="file" id="file-input" style="display:none" onchange="uploadFile()">
+
+<!-- ══ Settings Modal ══════════════════════════════════════════════════════ -->
+<div class="overlay" id="modal-settings" role="dialog" onclick="if(event.target===this) closeModal('modal-settings')">
+  <div class="modal">
+    <h3>Settings</h3>
+    <div class="settings-group">
+      <h4>General</h4>
+      <div class="setting-row">
+        <label for="setting-debug">Debug Mode (Show protocol messages)</label>
+        <label class="switch">
+          <input type="checkbox" id="setting-debug" onchange="toggleDebugMode(this.checked)">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="setting-row">
+        <label for="setting-hide-sidebar">Hide side panel</label>
+        <label class="switch">
+          <input type="checkbox" id="setting-hide-sidebar" onchange="toggleSidebarSetting(this.checked)">
+          <span class="slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <h4>Chat Appearance</h4>
+      <div class="setting-row">
+        <label for="setting-font-size">Chat Font Size</label>
+        <select id="setting-font-size" onchange="changeChatFontSize(this.value)" class="custom-select">
+          <option value="12px">12px (Small)</option>
+          <option value="14px">14px (Medium)</option>
+          <option value="16px" selected>16px (Normal)</option>
+          <option value="18px">18px (Large)</option>
+          <option value="20px">20px (Extra Large)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <h4>Database Management</h4>
+      <div class="setting-row" style="flex-direction: column; align-items: stretch; gap: 10px;">
+        <button class="btn-danger btn-full" onclick="clearAllDatabase()">Clear All Chat Data</button>
+        <button class="btn-ghost btn-full" onclick="compactDatabase()">Compact Database</button>
+      </div>
+    </div>
+
+    <div class="modal-btns">
+      <button class="btn-prim" onclick="closeModal('modal-settings')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ Forward Contact Selector Modal ══════════════════════════════════════ -->
+<div class="overlay" id="modal-forward" role="dialog" onclick="if(event.target===this) closeModal('modal-forward')">
+  <div class="modal">
+    <h3>Forward Message</h3>
+    <p style="font-size:12px; color:var(--text-muted); margin-bottom:15px;">Select a contact to forward this message to:</p>
+    <div id="forward-contact-list" class="selector-contact-list">
+      <!-- Loaded dynamically -->
+    </div>
+    <div class="modal-btns">
+      <button class="btn-ghost" onclick="closeModal('modal-forward')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ Bubble Context Menu ═════════════════════════════════════════════════ -->
+<div id="bubble-context-menu" class="bubble-ctx-menu" style="display:none">
+  <button class="ctx-item" onclick="triggerReply()">
+    <span>↩️</span> Reply
+  </button>
+  <button class="ctx-item" id="ctx-star-btn" onclick="triggerStar()">
+    <span>⭐️</span> Star Message
+  </button>
+  <button class="ctx-item" onclick="triggerForward()">
+    <span>➡️</span> Forward
+  </button>
+  <button class="ctx-item" onclick="triggerShare()">
+    <span>📤</span> Share
+  </button>
+  <button class="ctx-item danger" onclick="triggerDelete()">
+    <span>🗑</span> Delete
+  </button>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
